@@ -1,12 +1,16 @@
-// ET = c3e930e6
 
 /*
- * Facing console:
- *           PB0  PB1  PB11 PB10 PC15 PB14 PB15 PA8  PA9  PA10
- * GND  5V   A8   A9   A11  A10  A12  D8   D7   D6   D5   D4
- * 
- * A7   A6   A5   A4   A3   A2   A1   A0   D1   D2   D3   GND
- * PA7  PA6  PA5  PA4  PA3  PA2  PA1  PA0  PB4  PB3  PA15
+ * You need 21 pins, 8 of them (data) 5V tolerant. The assignments below
+ * are for an stm32f103c8t6 blue pill.
+ *
+ * View facing console:
+ *             PB0  PB1  PB11 PB10 PC15 PB14 PB15 PA8  PA9  PA10
+ * --------------------------------------------------------------
+ * | GND  5V   A8   A9   A11  A10  A12  D8   D7   D6   D5   D4  |
+ * |
+ * | A7   A6   A5   A4   A3   A2   A1   A0   D1   D2   D3   GND |
+ * --------------------------------------------------------------
+ *   PA7  PA6  PA5  PA4  PA3  PA2  PA1  PA0  PB4  PB3  PA15
  */
 
 unsigned dataPins[8] = { PB4,PB3,PA15,PA10,PA9,PA8,PB15,PB14 };
@@ -179,3 +183,6 @@ void loop() {
   sprintf(s, " %04x", sum);
   Serial.println(s);    
 }
+
+
+// ET = c3e930e6
