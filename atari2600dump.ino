@@ -13,6 +13,23 @@
  *   PA7  PA6  PA5  PA4  PA3  PA2  PA1  PA0  PB4  PB3  PA15
  */
 
+#define MASS_STORAGE
+
+#ifdef MASS_STORAGE
+#include <USBComposite.h>
+#include "FAT16ReadOnly.h"
+
+USBMassStorage MassStorage;
+USBCompositeSerial CompositeSerial;
+
+#define PRODUCT_ID 0x29
+
+FAT16RootDirEntry rootDir[3];
+
+char info[FAT16_SECTOR_SIZE];
+char index_htm[] = "<meta http-equiv=\"Refresh\" content=\"0; url='https://javatari.org/'\" />";
+#endif
+
 unsigned dataPins[8] = { PB4,PB3,PA15,PA10,PA9,PA8,PB15,PB14 };
 unsigned addressPins[13] = { PA0,PA1,PA2,PA3,PA4,PA5,PA6,PA7,PB0,PB1,PB11,PB10,PC15 };
 unsigned romSize = 4096;
@@ -90,17 +107,6 @@ uint32_t crcRange(uint32_t start, uint32_t count) {
 uint32_t address = 0;
 uint32_t crc = 0;
 
-void setup() {
-  for (unsigned i = 0 ; i < 8 ; i++)
-    pinMode(dataPins[i], INPUT);
-  for (unsigned i = 0 ; i < 13 ; i++)
-    pinMode(addressPins[i], OUTPUT);
-  Serial.begin();
-  while (!Serial);
-  delay(2000);
-  detectHotspots();
-}
-
 uint8_t read(uint32_t address) {
   digitalWrite(addressPins[12], 0);
   for (unsigned i = 0 ; i < 13 ; i++, address >>= 1) {
@@ -136,28 +142,85 @@ bool diff(uint32_t hotspot1,uint32_t hotspot2) {
 }
 
 void detectHotspots() {
+  const char* msg = NULL;
   if (diff(hotspots_F6[0],hotspots_F6[1])) {
     hotspots = hotspots_F6;
     numHotspots = sizeof(hotspots_F6)/sizeof(*hotspots_F6);
-    Serial.println("Detected F6 bank switching");
+    msg = "Detected F6 bank switching.\n";
   }
   else if (diff(hotspots_FA[1],hotspots_FA[2])) {
     hotspots = hotspots_FA;
     numHotspots = sizeof(hotspots_FA)/sizeof(*hotspots_FA);
-    Serial.println("Detected FA bank switching");
+    msg = "Detected FA bank switching.\n";
   }
   else if (diff(hotspots_F8[0],hotspots_F8[1])) {
     hotspots = hotspots_F8;
     numHotspots = sizeof(hotspots_F8)/sizeof(*hotspots_F8);
-    Serial.println("Detected F8 bank switching");
+    msg = "Detected F8 bank switching.\n";
   }
   else {
-    Serial.println("No bank switching detected");
+    msg = "No bank switching detected.\n";
   }
   romSize = numHotspots > 0 ? numHotspots * 4096 : 4096;
+  strcpy(info, msg);
 }
 
+#ifdef MASS_STORAGE
+bool write(const uint8_t *writebuff, uint32_t memoryOffset, uint16_t transferLength) {
+  return false;
+}
+
+bool fileReader(uint8_t *buf, const char* name, uint32_t sector, uint32_t sectorCount) {
+  if (!strcmp(name,"GAME.A26")) {
+    uint32_t size = sectorCount * FAT16_SECTOR_SIZE;
+    uint32_t start = sector * FAT16_SECTOR_SIZE;
+    for (unsigned i = 0 ; i < size ; i++)
+      buf[i] = bankedRead(start + i);
+    return true;
+  }
+  else if (!strcmp(name,"INFO.TXT")) {
+    strcpy((char*)buf, info); 
+    return true;
+  }
+  else if (!strcmp(name,"INDEX.HTM")) {
+    strcpy((char*)buf, index_htm);
+    return true;
+  }
+  return false;
+}
+#endif
+
+void setup() {
+  for (unsigned i = 0 ; i < 8 ; i++)
+    pinMode(dataPins[i], INPUT);
+  for (unsigned i = 0 ; i < 13 ; i++)
+    pinMode(addressPins[i], OUTPUT);
+  detectHotspots();
+#ifdef MASS_STORAGE
+  FAT16SetRootDir(rootDir, sizeof(rootDir)/sizeof(*rootDir), fileReader);
+  sprintf(info+strlen(info), "Length: %u bytes\n", romSize);
+  FAT16AddFile("INDEX.HTM", strlen(index_htm));
+  FAT16AddFile("INFO.TXT", strlen(info));
+  FAT16AddFile("GAME.A26", romSize);
+
+  USBComposite.setProductId(PRODUCT_ID);
+  MassStorage.setDriveData(0, FAT16_NUM_SECTORS, FAT16ReadSector, write);
+  MassStorage.registerComponent();
+
+  USBComposite.begin();
+  while(!USBComposite);  
+#else
+  Serial.begin();
+  while (!Serial);
+  delay(2000);
+#endif  
+}
+
+
 void loop() {
+#ifdef MASS_STORAGE
+  MassStorage.loop();
+#else  
   char s[9];
   uint8_t data16[16];
   if (address >= romSize) {
@@ -182,6 +245,7 @@ void loop() {
   crc = crc32(data16, 16, crc);
   sprintf(s, " %04x", sum);
   Serial.println(s);    
+#endif  
 }
 
 
