@@ -13,9 +13,6 @@
  *   PA7  PA6  PA5  PA4  PA3  PA2  PA1  PA0  PB4  PB3  PA15
  */
 
-#define MASS_STORAGE
-
-#ifdef MASS_STORAGE
 #include <USBComposite.h>
 #include "FAT16ReadOnly.h"
 
@@ -24,21 +21,30 @@ USBCompositeSerial CompositeSerial;
 
 #define PRODUCT_ID 0x29
 
-FAT16RootDirEntry rootDir[3];
+FAT16RootDirEntry rootDir[3+FAT16_NUM_ROOT_DIR_ENTRIES_FOR_LFN(255)];
 
+char filename[255];
 char info[FAT16_SECTOR_SIZE];
 char index_htm[] = "<meta http-equiv=\"Refresh\" content=\"0; url='https://javatari.org/'\" />";
-#endif
+
+#define CARTRIDGE_KEEP_TIME_MILLIS 2000 // cartridge must be kept in this long to register
+#define LED    PC13
+#define LED_ON 0
+
+#include "roms.h"
+
+int gameNumber = -1;
 
 unsigned dataPins[8] = { PB4,PB3,PA15,PA10,PA9,PA8,PB15,PB14 };
 unsigned addressPins[13] = { PA0,PA1,PA2,PA3,PA4,PA5,PA6,PA7,PB0,PB1,PB11,PB10,PC15 };
-unsigned romSize = 4096;
+unsigned romSize;
 uint32_t* hotspots = NULL;
 uint32_t hotspots_F6[] = { 0xff6, 0xff7, 0xff8, 0xff9 };
 uint32_t hotspots_F8[] = { 0xff8, 0xff9 };
 uint32_t hotspots_FA[] = { 0xff8, 0xff9, 0xffa };
 uint32_t numHotspots = 0;
 int lastBank = -1;
+uint32_t crc;
 
 // crc32 adapted from https://github.com/aeldidi/crc32/blob/master/src/crc32.c
 
@@ -105,9 +111,6 @@ uint32_t crcRange(uint32_t start, uint32_t count) {
   return ~result;
 }
 
-uint32_t address = 0;
-uint32_t crc = 0;
-
 uint8_t read(uint32_t address) {
   digitalWrite(addressPins[12], 0);
   for (unsigned i = 0 ; i < 13 ; i++, address >>= 1) {
@@ -144,11 +147,12 @@ uint8_t bankedRead(uint32_t address) {
   return value;
 }
 
-uint32_t romCRC32() {
+uint32_t romCRC(unsigned start, unsigned count) {
   uint32_t c = 0;
   uint32_t result = ~0;
-  
-  for (uint32_t i=0;  i < romSize ; i++) {
+  unsigned i = start;
+
+  for (;  i < count ; i++) {
     result ^= bankedRead(i);
     result = crc32_for_byte(result);
   }
@@ -163,43 +167,78 @@ bool diff(uint32_t hotspot1,uint32_t hotspot2) {
   return c != crcRange(256,500);
 }
 
-bool detectCartridge(void) {
-  return true;  // TODO
-  /*
-  uint8_t startValue = read(0);
-  for (int i=1;i<1024;i++) {
-    if (startValue != read(i))
-      return true;
-  }
-  return false; */
+void dataPinState(WiringPinMode state) {
+  for (unsigned i = 0 ; i < 8 ; i++)
+    pinMode(dataPins[i], state);  
 }
 
-void detectHotspots() {
+bool detectCartridge(void) {
+  dataPinState(INPUT_PULLUP);
+  uint16_t reset = read(0xFFC) | ((uint16_t)read(0xFFD)<<8);
+  dataPinState(INPUT);
+  return reset != 0xFFFF;
+}
+
+bool check2k(void) {
+  for (unsigned i = 0 ; i < 2048 ; i++)
+    if (read(i) != read(i+2048))
+      return false;
+  return true;
+}
+
+void identifyCartridge() {
   const char* msg = NULL;
   if (diff(hotspots_F6[0],hotspots_F6[1])) {
     hotspots = hotspots_F6;
     numHotspots = sizeof(hotspots_F6)/sizeof(*hotspots_F6);
     msg = "Bank switching: F6\r\n";
+    romSize = numHotspots * 4096;
   }
   else if (diff(hotspots_FA[1],hotspots_FA[2])) {
     hotspots = hotspots_FA;
     numHotspots = sizeof(hotspots_FA)/sizeof(*hotspots_FA);
     msg = "Bank switching: FA\r\n";
+    romSize = numHotspots * 4096;
   }
   else if (diff(hotspots_F8[0],hotspots_F8[1])) {
     hotspots = hotspots_F8;
     numHotspots = sizeof(hotspots_F8)/sizeof(*hotspots_F8);
     msg = "Bank switching: F8\r\n";
+    romSize = numHotspots * 4096;
   }
   else {
     msg = "Bank switching: none\r\n";
+    hotspots = NULL;
+    numHotspots = 0;
+    if (check2k()) {
+      romSize = 2048;      
+    }
+    else {
+      romSize = 4096;
+    }
   }
-  romSize = numHotspots > 0 ? numHotspots * 4096 : 4096;
   strcpy(info, msg);
   lastBank = -1;
+  crc = romCRC(0, romSize);
+  gameNumber = -1;
+  for (int i = 0 ; i < sizeof database / sizeof *database ; i++) {
+    if (romSize == database[i].size && crc == database[i].crc) {
+      gameNumber = i;
+      break;
+    }
+  }
+  sprintf(info+strlen(info), "Size: %u\nCRC-32: %08x\nGame: %s\n", 
+    romSize,
+    crc,
+    gameNumber < 0 ? "unidentified" : database[gameNumber].name);
+  if (gameNumber < 0)
+    strcpy(filename, "game.a26");
+  else {
+    strcpy(filename, database[gameNumber].name);
+    strcat(filename, ".a26");
+  }
 }
 
-#ifdef MASS_STORAGE
 bool write(const uint8_t *writebuff, uint32_t memoryOffset, uint16_t transferLength) {
   return false;
 }
@@ -213,9 +252,7 @@ bool fileReader(uint8_t *buf, const char* name, uint32_t sector, uint32_t sector
     return true;
   }
   else if (!strcmp(name,"INFO.TXT")) {
-    // this code assumes that our info and a terminating null fits into a single sector
     strcpy((char*)buf, info);
-    sprintf((char*)buf+strlen((char*)buf), "%08lx\r\n", romCRC32());
     return true;
   }
   else if (!strcmp(name,"INDEX.HTM")) {
@@ -224,21 +261,31 @@ bool fileReader(uint8_t *buf, const char* name, uint32_t sector, uint32_t sector
   }
   return false;
 }
-#endif
+
+void waitForCartridge() {
+  while (true) {
+    uint32_t start = millis();
+    while (detectCartridge()) {
+      if (millis() - start >= CARTRIDGE_KEEP_TIME_MILLIS)
+        return;
+    }
+  }
+}
 
 void setup() {
-  for (unsigned i = 0 ; i < 8 ; i++)
-    pinMode(dataPins[i], INPUT);
+  dataPinState(INPUT);
   for (unsigned i = 0 ; i < 13 ; i++)
     pinMode(addressPins[i], OUTPUT);
-  while (! detectCartridge()); 
-  detectHotspots();
-  sprintf(info+strlen(info), "Size: %u bytes\r\n", romSize);
-#ifdef MASS_STORAGE
+  pinMode(LED, OUTPUT);
+  digitalWrite(LED,!LED_ON);
+  waitForCartridge();
+  digitalWrite(LED,LED_ON);
+  identifyCartridge();
+
   FAT16SetRootDir(rootDir, sizeof(rootDir)/sizeof(*rootDir), fileReader);
   FAT16AddFile("INDEX.HTM", strlen(index_htm));
-  strcat(info, "CRC-32: ");
-  FAT16AddFile("INFO.TXT", strlen(info)+10); // room for CRC-32 and crlf
+  FAT16AddFile("INFO.TXT", strlen(info)); // room for CRC-32 and crlf
+  FAT16AddLFN("GAME.A26", filename);
   FAT16AddFile("GAME.A26", romSize);
 
   USBComposite.setProductId(PRODUCT_ID);
@@ -247,46 +294,13 @@ void setup() {
 
   USBComposite.begin();
   while(!USBComposite);  
-#else
-  Serial.begin();
-  while (!Serial);
-  delay(2000);
-  Serial.println(info);
-#endif  
 }
 
 
 void loop() {
-#ifdef MASS_STORAGE
   if (!detectCartridge())
     nvic_sys_reset();
   MassStorage.loop();
-#else  
-  char s[9];
-  uint8_t data16[16];
-  if (address >= romSize) {
-    Serial.print("Dumped: ");
-    Serial.print(romSize);
-    Serial.print(" bytes\r\nCRC-32: ");
-    sprintf(s,"%08lx", crc);
-    Serial.println(s);
-    for(;;);
-  }
-  uint16_t sum = 0;
-  sprintf(s, ">%05lx ", address);
-  Serial.print(s);
-  for (unsigned i = 0 ; i < 16 ; i++) {
-    uint8_t datum = bankedRead(address);
-    data16[i] = datum;
-    sum += datum;
-    address++;
-    sprintf(s, "%02x", datum);
-    Serial.print(s);
-  }
-  crc = crc32(data16, 16, crc);
-  sprintf(s, " %04x", sum);
-  Serial.println(s);    
-#endif  
 }
 
 

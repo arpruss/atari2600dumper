@@ -60,9 +60,10 @@ static uint16_t rootDirEntries;
 static FAT16FileReader fileReader;
 
 
-static char* from83Filename(char* name11) {
+static char* from83Filename(const char* name11) {
   static char out[13];
   int i;
+  char* toReturn;
   
   if (name11[8] == ' ') {
     out[8] = 0;
@@ -76,9 +77,14 @@ static char* from83Filename(char* name11) {
   for (i = 7; i >= 0 && name11[i] == ' ' ; i--);
   i++; // length of filename
   if (i <= 0)
-    return out+8;
-  memcpy(out+8-i, name11, i);
-  return out+8-i;
+    toReturn = out+8;
+  else {
+    memcpy(out+8-i, name11, i);
+    toReturn = out+8-i;
+  }
+  if (toReturn[0] == 0x05)
+    toReturn[0] = 0xE5;
+  return toReturn;
 }
 
 static void to83Filename(char* out, const char* name) {
@@ -107,16 +113,22 @@ static void to83Filename(char* out, const char* name) {
     out[i] = toupper(name[i]);
   for(; i<8; i++)
     out[i] = ' ';
+  if (out[0] == 0xE5)
+    out[0] = 0x05;
 }
 
+
+static inline bool hasData(int rootDirPos) {
+  FAT16RootDirEntry* entry = rootDir + rootDirPos;
+  return entry->name[0] != 0 && entry->name[0] != 0xE5 && entry->size != 0 && entry->cluster != 0;
+}
 
 static void updateClusters() {
   uint16_t cluster = 2;
   for (unsigned i=0; i<rootDirEntries && rootDir[i].name[0]; i++) {
-    if (rootDir[i].name[0] == 0xE5 || rootDir[i].size == 0)
+    if (! hasData(i))
       continue;
-    rootDir[i].clusterLow = cluster;
-    rootDir[i].clusterHigh = 0;
+    rootDir[i].cluster = cluster;
     cluster += (rootDir[i].size + CLUSTER_SIZE * SECTOR_SIZE - 1) / (CLUSTER_SIZE * SECTOR_SIZE);
   }
 }
@@ -128,15 +140,70 @@ FAT16RootDirEntry* FAT16AddFile(const char* name, uint32_t size) {
     return NULL;
   to83Filename(rootDir[i].name, name);
   rootDir[i].size = size;
+  rootDir[i].accessedDate = FAT16_DATE(2023,1,1);
+  rootDir[i].createdDate = FAT16_DATE(2023,1,1);
+  rootDir[i].modifiedDate = FAT16_DATE(2023,1,1);
+  rootDir[i].createdTime = FAT16_TIME(12,0,0);
+  rootDir[i].modifiedTime = FAT16_TIME(12,0,0);
+  rootDir[i].cluster = 0xFFFF;
   updateClusters();
   return rootDir+i;
+}
+
+bool FAT16AddLFN(const char* shortName, const char* longName) {
+  // todo: reverse order of parts
+  // see: https://www.win.tue.nl/~aeb/linux/fs/fat/fat-1.html
+  unsigned length = strlen(longName) + 1;
+  int i;
+  for (i=0 ; i<rootDirEntries && rootDir[i].name[0] ; i++);
+  char shortName83[11];
+  to83Filename(shortName83, shortName);
+  uint8_t sum = 0;
+  for (unsigned j = 0; j < 11 ; j++) {
+    sum = (sum>>1) + ((sum&1)<<7);
+    sum += (uint8_t)shortName83[j];
+  }
+  uint8_t sequence = 1;
+  int index = i + (length + 12) / 13 - 1;
+  if (length == 0 || index >= rootDirEntries)
+    return false;
+  unsigned start = 0; 
+  while (length > 0) {
+    int currentPart = length > 13 ? 13 : length;
+    uint8_t* entry = (uint8_t*)(rootDir+index);
+    memset(entry, 0, sizeof(FAT16RootDirEntry));
+    index--;
+    length -= currentPart;
+    entry[0] = sequence++;
+    entry[11] = 0xF;
+    entry[13] = sum;
+    if (length == 0)
+      entry[0] |= 1<<6;
+    uint8_t* outPos = entry+1;
+    for (unsigned j = 0 ; j < 13 ; j++) {
+      if (outPos == entry + 11)
+        outPos = entry + 14;
+      else if (outPos == entry + 26)
+        outPos = entry + 28;
+      if (j < currentPart) {
+        *outPos++ = *longName;
+        *outPos++ = 0;
+        longName++;
+      }
+      else {
+        *outPos++ = 0xFF;
+        *outPos++ = 0xFF;
+      }
+    }
+  }
+  return true;
 }
 
 static bool readDataSector(uint8_t* buf, uint32_t dataSector) {
   uint32_t sector = 0;
   memset(buf, 0, SECTOR_SIZE);
   for (int i=0; i<rootDirEntries && rootDir[i].name[0] && sector <= dataSector; i++) {
-    if (rootDir[i].name[0] == 0xE5 || rootDir[i].size == 0)
+    if (! hasData(i))
       continue;
     uint16_t size = (rootDir[i].size + CLUSTER_SIZE * SECTOR_SIZE - 1) / (CLUSTER_SIZE * SECTOR_SIZE) * CLUSTER_SIZE;
     if (dataSector < sector + size) {
@@ -187,7 +254,7 @@ static void readFatSector(uint8_t* buf, uint32_t sectorNumber) {
   
   uint16_t cluster = 2;
   for (int i=0; i<MAX_ROOT_DIR_ENTRIES && rootDir[i].name[0]; i++) {
-    if (rootDir[i].name[0] == 0xE5 || rootDir[i].size == 0) 
+    if (! hasData(i))
       continue;
     uint16_t last = cluster + (rootDir[i].size + CLUSTER_SIZE * SECTOR_SIZE - 1) / (CLUSTER_SIZE * SECTOR_SIZE);
     for (; cluster < last ; cluster++) {
