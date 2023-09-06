@@ -13,6 +13,7 @@
  *   PA7  PA6  PA5  PA4  PA3  PA2  PA1  PA0  PB4  PB3  PA15
  */
 
+#include <ctype.h>
 #include <USBComposite.h>
 #include "FAT16ReadOnly.h"
 
@@ -21,9 +22,11 @@ USBCompositeSerial CompositeSerial;
 
 #define PRODUCT_ID 0x29
 
-FAT16RootDirEntry rootDir[3+FAT16_NUM_ROOT_DIR_ENTRIES_FOR_LFN(255)];
+FAT16RootDirEntry rootDir[4+2*FAT16_NUM_ROOT_DIR_ENTRIES_FOR_LFN(255)];
 
 char filename[255];
+char stellaFilename[255];
+char stellaShortName[] = "GAME.XXX";
 char info[FAT16_SECTOR_SIZE];
 char index_htm[] = "<meta http-equiv=\"Refresh\" content=\"0; url='https://javatari.org/'\" />";
 
@@ -38,10 +41,12 @@ int gameNumber = -1;
 unsigned dataPins[8] = { PB4,PB3,PA15,PA10,PA9,PA8,PB15,PB14 };
 unsigned addressPins[13] = { PA0,PA1,PA2,PA3,PA4,PA5,PA6,PA7,PB0,PB1,PB11,PB10,PC15 };
 unsigned romSize;
-uint32_t* hotspots = NULL;
-uint32_t hotspots_F6[] = { 0xff6, 0xff7, 0xff8, 0xff9 };
-uint32_t hotspots_F8[] = { 0xff8, 0xff9 };
-uint32_t hotspots_FA[] = { 0xff8, 0xff9, 0xffa };
+const char* stellaExtension;
+const uint32_t* hotspots = NULL;
+const uint32_t hotspots_F6[] = { 0xff6, 0xff7, 0xff8, 0xff9 };
+const uint32_t hotspots_F8[] = { 0xff8, 0xff9 };
+const uint32_t hotspots_F4[] = { 0xff4, 0xff5, 0xff6, 0xff7, 0xff8, 0xff9, 0xffa, 0xffb };
+const uint32_t hotspots_FA[] = { 0xff8, 0xff9, 0xffa }; 
 uint32_t numHotspots = 0;
 int lastBank = -1;
 uint32_t crc;
@@ -188,20 +193,30 @@ bool check2k(void) {
 
 void identifyCartridge() {
   const char* msg = NULL;
-  if (diff(hotspots_F6[0],hotspots_F6[1])) {
+  if (diff(hotspots_F4[0],hotspots_F4[7])) {
+    hotspots = hotspots_F4;
+    numHotspots = sizeof(hotspots_F4)/sizeof(*hotspots_F4);
+    msg = "Bank switching: F4\r\n";
+    stellaExtension = ".f4";
+    romSize = numHotspots * 4096;
+  }
+  else if (diff(hotspots_F6[0],hotspots_F6[1])) {
     hotspots = hotspots_F6;
+    stellaExtension = ".f6";
     numHotspots = sizeof(hotspots_F6)/sizeof(*hotspots_F6);
     msg = "Bank switching: F6\r\n";
     romSize = numHotspots * 4096;
   }
   else if (diff(hotspots_FA[1],hotspots_FA[2])) {
     hotspots = hotspots_FA;
+    stellaExtension = ".fa";
     numHotspots = sizeof(hotspots_FA)/sizeof(*hotspots_FA);
     msg = "Bank switching: FA\r\n";
-    romSize = numHotspots * 4096;
-  }
+    romSize = numHotspots * 4096; 
+  } 
   else if (diff(hotspots_F8[0],hotspots_F8[1])) {
     hotspots = hotspots_F8;
+    stellaExtension = ".f8";
     numHotspots = sizeof(hotspots_F8)/sizeof(*hotspots_F8);
     msg = "Bank switching: F8\r\n";
     romSize = numHotspots * 4096;
@@ -211,9 +226,11 @@ void identifyCartridge() {
     hotspots = NULL;
     numHotspots = 0;
     if (check2k()) {
+      stellaExtension = ".2k";
       romSize = 2048;      
     }
     else {
+      stellaExtension = ".4k";
       romSize = 4096;
     }
   }
@@ -231,12 +248,23 @@ void identifyCartridge() {
     romSize,
     crc,
     gameNumber < 0 ? "unidentified" : database[gameNumber].name);
-  if (gameNumber < 0)
+  if (gameNumber < 0) {
     strcpy(filename, "game.a26");
+    strcpy(stellaFilename, "game");
+  }
   else {
     strcpy(filename, database[gameNumber].name);
     strcat(filename, ".a26");
+    strcpy(stellaFilename, database[gameNumber].name);
   }
+  strcat(stellaFilename, stellaExtension);
+  const char* p = stellaExtension;
+  char* q = stellaShortName + 4;
+  while (*p) {
+    char c = *p++;
+    *q++ = toupper(c);
+  }
+  *q = 0;
 }
 
 bool write(const uint8_t *writebuff, uint32_t memoryOffset, uint16_t transferLength) {
@@ -244,7 +272,7 @@ bool write(const uint8_t *writebuff, uint32_t memoryOffset, uint16_t transferLen
 }
 
 bool fileReader(uint8_t *buf, const char* name, uint32_t sector, uint32_t sectorCount) {
-  if (!strcmp(name,"GAME.A26")) {
+  if (!strcmp(name,"GAME.A26") || !strcmp(name,stellaShortName)) {
     uint32_t size = sectorCount * FAT16_SECTOR_SIZE;
     uint32_t start = sector * FAT16_SECTOR_SIZE;
     for (unsigned i = 0 ; i < size ; i++)
@@ -279,14 +307,16 @@ void setup() {
   pinMode(LED, OUTPUT);
   digitalWrite(LED,!LED_ON);
   waitForCartridge();
-  digitalWrite(LED,LED_ON);
   identifyCartridge();
+  digitalWrite(LED,LED_ON);
 
   FAT16SetRootDir(rootDir, sizeof(rootDir)/sizeof(*rootDir), fileReader);
   FAT16AddFile("INDEX.HTM", strlen(index_htm));
   FAT16AddFile("INFO.TXT", strlen(info)); // room for CRC-32 and crlf
   FAT16AddLFN("GAME.A26", filename);
   FAT16AddFile("GAME.A26", romSize);
+  FAT16AddLFN(stellaShortName, stellaFilename);
+  FAT16AddFile(stellaShortName, romSize);
 
   USBComposite.setProductId(PRODUCT_ID);
   MassStorage.setDriveData(0, FAT16_NUM_SECTORS, FAT16ReadSector, write);
