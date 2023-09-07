@@ -41,7 +41,7 @@ int gameNumber = -1;
 unsigned dataPins[8] = { PB4,PB3,PA15,PA10,PA9,PA8,PB15,PB14 };
 unsigned addressPins[13] = { PA0,PA1,PA2,PA3,PA4,PA5,PA6,PA7,PB0,PB1,PB11,PB10,PC15 };
 unsigned romSize;
-const char* stellaExtension;
+char stellaExtension[5];
 const uint32_t* hotspots = NULL;
 const uint32_t hotspots_F6[] = { 0xff6, 0xff7, 0xff8, 0xff9 };
 const uint32_t hotspots_F8[] = { 0xff8, 0xff9 };
@@ -50,6 +50,7 @@ const uint32_t hotspots_FA[] = { 0xff8, 0xff9, 0xffa };
 uint32_t numHotspots = 0;
 int lastBank = -1;
 uint32_t crc;
+uint8_t detectBuffer[128];
 
 // crc32 adapted from https://github.com/aeldidi/crc32/blob/master/src/crc32.c
 
@@ -131,12 +132,23 @@ uint8_t read(uint32_t address) {
   return datum;
 }
 
+inline bool switchHotspot(uint32_t hotspot, bool raiseD0) {
+  if (raiseD0) {
+      pinMode(dataPins[0], INPUT_PULLUP); // D0 must be high to switch banks on FA: https://patents.google.com/patent/US4485457A/en
+      read(hotspot);
+      pinMode(dataPins[0], INPUT);       
+  }
+  else {
+      read(hotspot);
+  }
+}
+
 uint8_t bankedRead(uint32_t address) {
   if (numHotspots == 0)
     return read(address);
   int bank = address / 4096;
   if (bank != lastBank) {
-    read(hotspots[bank]);
+    switchHotspot(hotspots[bank], hotspots == hotspots_FA);
     lastBank = bank;
   }
   uint16_t maskedAddress = address % 4096;
@@ -165,11 +177,36 @@ uint32_t romCRC(unsigned start, unsigned count) {
   return ~result;
 }
 
-bool diff(uint32_t hotspot1,uint32_t hotspot2) {
-  read(hotspot1);
-  uint32_t c = crcRange(256,500);
-  read(hotspot2);
-  return c != crcRange(256,500);
+bool diff(uint32_t hotspot1,uint32_t hotspot2, bool D0) {
+  // sample memory space every 37 bytes, skipping a potential RAM space at the beginning; this is nearly certain to pick up a difference 
+  // between banks if there is a difference
+  // detectBuffer is large enough for this sampling
+  switchHotspot(hotspot1, D0);
+  for (unsigned i=256,j=0;i<0x0FF0; (i+=37),j++)
+    detectBuffer[j] = read(i);
+  switchHotspot(hotspot2, D0);
+  for (unsigned i=256,j=0;i<0x0FF0; (i+=37),j++)
+    if (detectBuffer[j] != read(i))
+      return true;
+  return false;
+}
+
+bool detectExtraRAM() {
+  // if the first 128 bytes don't change between banks, they're probably RAM
+  // TODO: smarter way to check!
+  if (hotspots == hotspots_FA)
+    return true;
+  if (numHotspots == 0)
+    return false;
+  read(hotspots[0]);
+  for (unsigned i=0; i<128; i++)
+    detectBuffer[i] = read(i);
+  for (unsigned j=1; j<numHotspots; j++) {
+    read(hotspots[j]);
+    for (unsigned i=0; i<128; i++)
+      if (detectBuffer[i] != read(i))
+        return false;
+  }
 }
 
 void dataPinState(WiringPinMode state) {
@@ -193,48 +230,58 @@ bool check2k(void) {
 
 void identifyCartridge() {
   const char* msg = NULL;
-  if (diff(hotspots_F4[0],hotspots_F4[7])) {
+  bool checkRAM = false;
+  strcpy(info, "Cartridge type: ");
+  if (diff(hotspots_F4[0],hotspots_F4[7],false)) {
     hotspots = hotspots_F4;
     numHotspots = sizeof(hotspots_F4)/sizeof(*hotspots_F4);
-    msg = "Bank switching: F4\r\n";
-    stellaExtension = ".f4";
+    strcat(info, "F4");
+    strcpy(stellaExtension, ".f4");
     romSize = numHotspots * 4096;
+    checkRAM = true;
   }
-  else if (diff(hotspots_F6[0],hotspots_F6[1])) {
+  else if (diff(hotspots_F6[0],hotspots_F6[1],false)) {
     hotspots = hotspots_F6;
-    stellaExtension = ".f6";
     numHotspots = sizeof(hotspots_F6)/sizeof(*hotspots_F6);
-    msg = "Bank switching: F6\r\n";
+    strcpy(stellaExtension, ".f6");
+    strcat(info, "F6");
     romSize = numHotspots * 4096;
+    checkRAM = true;
   }
-  else if (diff(hotspots_FA[1],hotspots_FA[2])) {
+  else if (diff(hotspots_FA[1],hotspots_FA[2],true)) {
     hotspots = hotspots_FA;
-    stellaExtension = ".fa";
     numHotspots = sizeof(hotspots_FA)/sizeof(*hotspots_FA);
-    msg = "Bank switching: FA\r\n";
+    strcpy(stellaExtension, ".fa");
+    strcat(info, "FA");
     romSize = numHotspots * 4096; 
+    checkRAM = true;
   } 
-  else if (diff(hotspots_F8[0],hotspots_F8[1])) {
+  else if (diff(hotspots_F8[0],hotspots_F8[1],false)) {
     hotspots = hotspots_F8;
-    stellaExtension = ".f8";
     numHotspots = sizeof(hotspots_F8)/sizeof(*hotspots_F8);
-    msg = "Bank switching: F8\r\n";
+    strcpy(stellaExtension, ".f8");
+    strcat(info, "F8");
     romSize = numHotspots * 4096;
+    checkRAM = true;
   }
   else {
-    msg = "Bank switching: none\r\n";
     hotspots = NULL;
     numHotspots = 0;
     if (check2k()) {
-      stellaExtension = ".2k";
+      strcpy(stellaExtension, ".2k");
+      strcat(info, "2K");
       romSize = 2048;      
     }
     else {
-      stellaExtension = ".4k";
+      strcpy(stellaExtension, ".4k");
+      strcat(info, "4K");
       romSize = 4096;
     }
   }
-  strcpy(info, msg);
+  if (checkRAM && detectExtraRAM()) {
+    strcat(info, "SC");
+    strcat(stellaExtension, "s");
+  }
   lastBank = -1;
   crc = romCRC(0, romSize);
   gameNumber = -1;
@@ -244,7 +291,7 @@ void identifyCartridge() {
       break;
     }
   }
-  sprintf(info+strlen(info), "Size: %u\nCRC-32: %08x\nGame: %s\n", 
+  sprintf(info+strlen(info), "\r\nSize: %u\nCRC-32: %08x\nGame: %s\n", 
     romSize,
     crc,
     gameNumber < 0 ? "unidentified" : database[gameNumber].name);
