@@ -122,7 +122,7 @@ uint8_t read(uint32_t address) {
   for (unsigned i = 0 ; i < 13 ; i++, address >>= 1) {
     digitalWrite(addressPins[i], address & 1);
   }
-  delayMicroseconds(20);
+  delayMicroseconds(10);
   digitalWrite(addressPins[12], 1);
   uint8_t datum = 0;
   for (int i = 7 ; i >= 0 ; i--) {
