@@ -4,7 +4,7 @@
  * know.
  */
  
-#include <stdint.h>
+#include "base64.h"
 
 //#define TEST
 #ifdef TEST
@@ -13,9 +13,7 @@
 #endif
 
 static const char encoder[]="ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-static int initialized;
 
-#define BASE64_ENCSIZE(size) (4 * (((size) + 2) / 3))
 
 // put the [destStart:destStart+destLength) section of the base64 encoding into dest
 void

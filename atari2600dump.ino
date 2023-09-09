@@ -16,6 +16,7 @@
 #include <ctype.h>
 #include <USBComposite.h>
 #include "FAT16ReadOnly.h"
+#include "base64.h"
 
 USBMassStorage MassStorage;
 USBCompositeSerial CompositeSerial;
@@ -28,7 +29,10 @@ char filename[255];
 char stellaFilename[255];
 char stellaShortName[] = "GAME.XXX";
 char info[FAT16_SECTOR_SIZE];
-char index_htm[] = "<meta http-equiv=\"Refresh\" content=\"0; url='https://javatari.org/'\" />";
+const char launch_htm_0[]="<!DOCTYPE html><html lang='en'><head><meta charset='UTF-8'><title>Javatari</title><meta name='description' content='Javatari - The online Atari 2600 emulator'></head>"
+"<body><div id='javatari' style='text-align: center; margin: 20px auto 0; padding: 0 10px;'><div id='javatari-screen' style='box-shadow: 2px 2px 10px rgba(0, 0, 0, .7);'></div></div>"
+"<script src='https://arpruss.github.io/javatari/javatari.js'></script><script>Javatari.CARTRIDGE_URL = 'data:application/octet-stream;base64,";
+const char launch_htm_1[]="';Javatari.preLoadImagesAndStart();</script></body></html>\n";
 
 #define CARTRIDGE_KEEP_TIME_MILLIS 2000 // cartridge must be kept in this long to register
 #define LED    PC13
@@ -40,7 +44,7 @@ int gameNumber = -1;
 
 unsigned dataPins[8] = { PB4,PB3,PA15,PA10,PA9,PA8,PB15,PB14 };
 unsigned addressPins[13] = { PA0,PA1,PA2,PA3,PA4,PA5,PA6,PA7,PB0,PB1,PB11,PB10,PC15 };
-unsigned romSize;
+uint32_t romSize;
 char stellaExtension[5];
 const uint32_t* hotspots = NULL;
 const uint32_t hotspots_F6[] = { 0xff6, 0xff7, 0xff8, 0xff9 };
@@ -182,10 +186,10 @@ bool diff(uint32_t hotspot1,uint32_t hotspot2, bool D0) {
   // between banks if there is a difference
   // detectBuffer is large enough for this sampling
   switchHotspot(hotspot1, D0);
-  for (unsigned i=256,j=0;i<0x0FF0; (i+=37),j++)
+  for (unsigned i=512,j=0;i<0x0FF0; (i+=37),j++)
     detectBuffer[j] = read(i);
   switchHotspot(hotspot2, D0);
-  for (unsigned i=256,j=0;i<0x0FF0; (i+=37),j++)
+  for (unsigned i=512,j=0;i<0x0FF0; (i+=37),j++)
     if (detectBuffer[j] != read(i))
       return true;
   return false;
@@ -318,6 +322,20 @@ bool write(const uint8_t *writebuff, uint32_t memoryOffset, uint16_t transferLen
   return false;
 }
 
+void generateHTML(uint8_t* buf, uint32_t sector, uint32_t sectorCount) {
+    uint32_t b64Size = BASE64_ENCSIZE(romSize);
+    uint32_t destStart;
+    uint32_t srcStart;
+    uint32_t length;
+    length = FAT16GetChunkCopyRange(0, sizeof(launch_htm_0)-1, sector, sectorCount, &destStart, &srcStart);
+    if (length) memcpy(buf+destStart, launch_htm_0+srcStart, length);
+    length = FAT16GetChunkCopyRange(sizeof(launch_htm_0)-1, b64Size, sector, sectorCount, &destStart, &srcStart);
+    if (length) base64_encode((char*)buf+destStart, srcStart, length, bankedRead, romSize);
+    length = FAT16GetChunkCopyRange(sizeof(launch_htm_0)-1+b64Size, sizeof(launch_htm_1)-1, sector, sectorCount, &destStart, &srcStart);
+    if (length) memcpy(buf+destStart, launch_htm_1+srcStart, length);
+
+}
+
 bool fileReader(uint8_t *buf, const char* name, uint32_t sector, uint32_t sectorCount) {
   if (!strcmp(name,"GAME.A26") || !strcmp(name,stellaShortName)) {
     uint32_t size = sectorCount * FAT16_SECTOR_SIZE;
@@ -330,8 +348,8 @@ bool fileReader(uint8_t *buf, const char* name, uint32_t sector, uint32_t sector
     strcpy((char*)buf, info);
     return true;
   }
-  else if (!strcmp(name,"INDEX.HTM")) {
-    strcpy((char*)buf, index_htm);
+  else if (!strcmp(name,"LAUNCH.HTM")) {
+    generateHTML(buf, sector, sectorCount);
     return true;
   }
   return false;
@@ -358,7 +376,7 @@ void setup() {
   digitalWrite(LED,LED_ON);
 
   FAT16SetRootDir(rootDir, sizeof(rootDir)/sizeof(*rootDir), fileReader);
-  FAT16AddFile("INDEX.HTM", strlen(index_htm));
+  FAT16AddFile("LAUNCH.HTM", sizeof(launch_htm_0)-1+sizeof(launch_htm_1)-1+BASE64_ENCSIZE(romSize));
   FAT16AddFile("INFO.TXT", strlen(info)); // room for CRC-32 and crlf
   FAT16AddLFN("GAME.A26", filename);
   FAT16AddFile("GAME.A26", romSize);

@@ -25,10 +25,12 @@ typedef struct __attribute__ ((packed)) {
   uint32_t size; // 28
 } FAT16RootDirEntry;
 
-bool FAT16MemoryFileReader(uint8_t* out, const uint8_t* in, uint32_t inLength, uint32_t sector, uint32_t numSectors);
-typedef bool (*FAT16FileReader)(uint8_t* buf, const char* name, uint32_t sector, uint32_t numSectors);
+uint32_t FAT16GetChunkCopyRange(uint32_t srcChunkStartInFile, uint32_t srcChunkLength, uint32_t requestedSectorStart, uint32_t requestedNumberOfSectors,
+        uint32_t* destStartP, uint32_t* srcStartP);
+void FAT16MemoryFileReader(uint8_t* out, const uint8_t* in, uint32_t inLength, uint32_t sector, uint32_t numSectors);
 FAT16RootDirEntry* FAT16AddFile(const char* name, uint32_t size);
 bool FAT16AddLFN(const char* shortName, const char* longName);
+typedef bool (*FAT16FileReader)(uint8_t* buf, const char* name, uint32_t sector, uint32_t numSectors);
 void FAT16SetRootDir(FAT16RootDirEntry* r, unsigned count, FAT16FileReader reader);
 bool FAT16ReadSector(uint8_t *buf, uint32_t sector, uint16_t numSectors);
 

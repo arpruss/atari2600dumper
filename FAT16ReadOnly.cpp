@@ -294,7 +294,50 @@ bool FAT16ReadSector(uint8_t *buf, uint32_t sector, uint16_t numSectors) {
   return true;
 }
 
-bool FAT16MemoryFileReader(uint8_t* out, const uint8_t* in, uint32_t inLength, uint32_t sector, uint32_t numSectors) {
+/* 
+ * This is a pretty complicated thing to explain. The idea is that we imagine a file, and we want to fill a destination buffer with a specified
+ * range of sectors out of that file. However, the file as a whole isn't quite available. Instead, what we have is a source chunk, which 
+ * represents the subset of the file starting at position srcChunkStartInFile with length srcChunkStartInFile+srcChunkLength. We want to 
+ * know what copy operation needs to be performed from the source chunk to the destination buffer. If both the source chunk
+ * and the destination buffer are uint8_t arrays, then after calling 
+ *   length = FAT16GetChunkCopyRange(srcChunkStartInFile, srcChunkLength, requestedSectorStart, requestedNumberOfSectors, &destStart, &srcStart);
+ * you need to do:
+ *   if (length) memcpy(dest+destStart,srcChunk+srcStart,length);
+ * If one or the other isn't a buffer, what you do with the information may be more complex.
+ */
+uint32_t FAT16GetChunkCopyRange(uint32_t srcChunkStartInFile, uint32_t srcChunkLength, uint32_t requestedSectorStart, uint32_t requestedNumberOfSectors,
+        uint32_t* destStartP, uint32_t* srcStartP) {
+    uint32_t requestStart = requestedSectorStart * FAT16_SECTOR_SIZE;
+    uint32_t requestEnd = requestStart + requestedNumberOfSectors * FAT16_SECTOR_SIZE;
+    if (requestEnd <= srcChunkStartInFile)
+        return 0;
+    uint32_t srcChunkEndInFile = srcChunkStartInFile + srcChunkLength;
+    if (srcChunkEndInFile <= requestStart)
+        return 0;
+    /* at this point, we know that the requested region overlaps the available chunk */
+    if (srcChunkStartInFile <= requestStart)
+        *srcStartP = requestStart - srcChunkStartInFile;
+    else
+        *srcStartP = 0;
+    uint32_t srcEnd;
+    if (srcChunkEndInFile <= requestEnd)
+        srcEnd = srcChunkLength;
+    else
+        srcEnd = requestEnd - srcChunkStartInFile;
+    if (srcChunkStartInFile <= requestStart)
+        *destStartP = 0;
+    else
+        *destStartP = srcChunkStartInFile - requestStart;
+    return srcEnd - *srcStartP;
+}
+
+void FAT16MemoryFileReader(uint8_t* out, const uint8_t* in, uint32_t inLength, uint32_t sector, uint32_t numSectors) {
+    uint32_t length;
+    uint32_t src;
+    uint32_t dest;
+    length = FAT16GetChunkCopyRange(0, inLength, sector, numSectors, &dest, &src);
+    if (length) memcpy(out+dest, in+src, length);
+    /*
     uint32_t start = sector * SECTOR_SIZE;
     if (start >= inLength)
       return true;
@@ -302,5 +345,6 @@ bool FAT16MemoryFileReader(uint8_t* out, const uint8_t* in, uint32_t inLength, u
     if (end > inLength)
       end = inLength;
     memcpy(out, in+start, end-start); 
+    */
 }
 
