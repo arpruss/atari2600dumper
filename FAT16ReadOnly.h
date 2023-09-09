@@ -32,8 +32,6 @@ FAT16RootDirEntry* FAT16AddFile(const char* name, uint32_t size);
 bool FAT16AddLFN(const char* shortName, const char* longName);
 typedef bool (*FAT16FileReader)(uint8_t* buf, const char* name, uint32_t sector, uint32_t numSectors);
 void FAT16SetRootDir(FAT16RootDirEntry* r, unsigned count, FAT16FileReader reader);
-bool FAT16ReadSector(uint8_t *buf, uint32_t sector, uint16_t numSectors);
-
-// TODO: names starting with E6
+bool FAT16ReadSectors(uint8_t *buf, uint32_t sector, uint16_t numSectors);
 
 #endif

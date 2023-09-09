@@ -384,7 +384,7 @@ void setup() {
   FAT16AddFile(stellaShortName, romSize);
 
   USBComposite.setProductId(PRODUCT_ID);
-  MassStorage.setDriveData(0, FAT16_NUM_SECTORS, FAT16ReadSector, write);
+  MassStorage.setDriveData(0, FAT16_NUM_SECTORS, FAT16ReadSectors, write);
   MassStorage.registerComponent();
 
   USBComposite.begin();
