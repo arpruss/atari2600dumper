@@ -149,7 +149,7 @@ uint8_t read(uint32_t address) {
     digitalWrite(addressPins[i], address & 1);
   }
   digitalWrite(addressPins[12], 1);
-  delayMicroseconds(8); //TODO:?order
+  delayMicroseconds(4); //TODO:?order
   uint8_t datum = 0;
   for (int i = 7 ; i >= 0 ; i--) {
     datum = (datum << 1) | digitalRead(dataPins[i]);
@@ -158,7 +158,7 @@ uint8_t read(uint32_t address) {
   return datum;
 }
 
-// write with no initial A12 toggle
+// write but don't zero A12
 uint8_t write0(uint32_t address, uint8_t value) {
   for (unsigned i = 0 ; i < 8 ; i++, value>>=1) {
     pinMode(dataPins[i], (value & 1) ? INPUT_PULLUP : INPUT_PULLDOWN);
@@ -166,7 +166,7 @@ uint8_t write0(uint32_t address, uint8_t value) {
   for (unsigned i = 0 ; i < 13 ; i++, address >>= 1) {
     digitalWrite(addressPins[i], address & 1);
   }
-  delayMicroseconds(8);
+  delayMicroseconds(4);
 
   dataPinState(INPUT);
 }
@@ -451,9 +451,10 @@ void identifyCartridge() {
         break;
       }
     }
+
     if (gameNumber >= 0 || blankValue == 0xFF || portEnd <= portStart)
       break;
-    blankValue = 0;
+    blankValue = 0xFF;
   }
   while (1);
   sprintf(info+strlen(info), "\r\nSize: %u\nCRC-32: %08x\nGame: %s\n", 
