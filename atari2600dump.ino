@@ -289,17 +289,20 @@ bool check2k(void) {
   return true;
 }
 
+uint8_t lfsr(uint8_t LFSR) {
+  return ((LFSR << 1) | (~(((LFSR >> 7) ^ (LFSR >> 5)) ^ ((LFSR >> 4) ^ (LFSR >> 3))) & 1)) & 0xff;
+}
+
 bool detectDPC(void) {
-  // detect the random number generate at location0
+  // detect the random number generator 
   read(0x70);
-  uint8_t r0 = read(1);
-  for (unsigned i = 0 ; i < 200 ; i++) {
-    delayMicroseconds(10);
-    uint8_t x = read(1);
-    if (x != r0)
-      return true;
+  uint8_t x = 0;
+  for (int i=0; i<8; i++) {
+    if (read(0) != x)
+      return false;
+    x = lfsr(x);
   }
-  return false;
+  return true;
 }
 
 void identifyCartridge() {
@@ -477,6 +480,7 @@ void waitForCartridge() {
     while (detectCartridge()) {
       if (millis() - start >= CARTRIDGE_KEEP_TIME_MILLIS)
         return;
+      delay(2);
     }
   }
 }
