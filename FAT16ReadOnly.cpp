@@ -241,17 +241,6 @@ static void readRootDirSector(uint8_t* buf, uint32_t sectorNumber) {
   memcpy(buf, rootDir+start, (end-start)*sizeof(FAT16RootDirEntry));
 }
 
-static void readRootDirSectors(uint8_t* buf, uint32_t sectorNumber, uint32_t count) {
-  memset(buf, 0, SECTOR_SIZE * count);
-  uint32_t start = sectorNumber * SECTOR_SIZE / sizeof(FAT16RootDirEntry);
-  uint32_t end = (sectorNumber + count) * SECTOR_SIZE / sizeof(FAT16RootDirEntry);
-  if (start >= rootDirEntries)
-    return;
-  if (end > rootDirEntries)
-    end = rootDirEntries;
-  memcpy(buf, rootDir+start, (end-start)*sizeof(FAT16RootDirEntry));
-}
-
 static void readFatSector(uint8_t* buf, uint32_t sectorNumber) {
   memset(buf, 0, SECTOR_SIZE);
   if (sectorNumber == 0) {
@@ -262,41 +251,6 @@ static void readFatSector(uint8_t* buf, uint32_t sectorNumber) {
   }
   uint16_t firstCluster = sectorNumber * SECTOR_SIZE / 2;
   uint16_t endCluster = firstCluster + SECTOR_SIZE / 2;
-  
-  uint16_t cluster = 2;
-  for (int i=0; i<MAX_ROOT_DIR_ENTRIES && rootDir[i].name[0]; i++) {
-    if (! hasData(i))
-      continue;
-    uint16_t last = cluster + (rootDir[i].size + CLUSTER_SIZE * SECTOR_SIZE - 1) / (CLUSTER_SIZE * SECTOR_SIZE);
-    for (; cluster < last ; cluster++) {
-      if (firstCluster <= cluster && cluster < endCluster) {
-        uint8_t* entry = buf + (cluster - firstCluster) * 2;
-        if (cluster + 1 < last) {
-          uint16_t next = cluster+1;
-          entry[0] = next & 0xFF;
-          entry[1] = next >> 8;
-        }
-        else {
-          entry[0] = 0xFF;
-          entry[1] = 0xFF;
-        }
-      }
-      else if (cluster >= endCluster)
-        break;
-    }
-  }
-}
-
-static void readFatSectors(uint8_t* buf, uint32_t sectorNumber, uint32_t count) {
-  memset(buf, 0, SECTOR_SIZE * count);
-  if (sectorNumber == 0) {
-    buf[0] = FAT16BootRecord.mediaDescriptor;
-    buf[1] = 0xFF;
-    buf[2] = 0xFF;
-    buf[3] = 0xFF;
-  }
-  uint16_t firstCluster = sectorNumber * SECTOR_SIZE / 2;
-  uint16_t endCluster = firstCluster + count * SECTOR_SIZE / 2;
   
   uint16_t cluster = 2;
   for (int i=0; i<MAX_ROOT_DIR_ENTRIES && rootDir[i].name[0]; i++) {
@@ -334,48 +288,8 @@ static void readSector(uint8_t* buf, uint32_t sectorNumber) {
 }
 
 bool FAT16ReadSectors(uint8_t *buf, uint32_t sector, uint16_t numSectors) {
-  while(numSectors) {
-    if (sector == BOOT_SECTOR) {
-      readBootSector(buf);
-      buf += FAT16_SECTOR_SIZE;
-      numSectors--;
-      sector++;
-      continue;
-    }
-    unsigned i;
-    for (i = 0 ; i < NUM_FATS ; i++) {
-      uint16_t fatStart = FATS_SECTOR + i * SECTORS_PER_FAT;
-      uint16_t fatEnd = fatStart + SECTORS_PER_FAT;
-      if (sector < fatEnd) {
-        uint16_t count;
-        if (sector + numSectors <= fatEnd)
-          count = numSectors;
-        else
-          count = fatEnd - sector;
-        readFatSectors(buf, sector - fatStart, count);
-        numSectors -= count;
-        sector += count;
-        buf += count * FAT16_SECTOR_SIZE;
-        break;
-      }
-    }
-    if (i < NUM_FATS)
-      continue;
-    if (sector < DATA_SECTOR) {
-        uint16_t count;
-        if (sector + numSectors <= DATA_SECTOR)
-          count = numSectors;
-        else
-          count = DATA_SECTOR - sector;
-        readRootDirSectors(buf, sector - ROOT_DIR_SECTOR, count);
-        numSectors -= count;
-        sector += count;
-        buf += count * FAT16_SECTOR_SIZE;
-        continue;
-    }
-    readDataSectors(buf, sector, numSectors);
-    return true;
-  }
+  for (int i=0; i<numSectors; i++)
+    readSector(buf+i*SECTOR_SIZE, sector+i);
   
   return true;
 }
@@ -433,4 +347,3 @@ void FAT16MemoryFileReader(uint8_t* out, const uint8_t* in, uint32_t inLength, u
     memcpy(out, in+start, end-start); 
     */
 }
-

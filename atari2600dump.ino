@@ -23,7 +23,13 @@ USBCompositeSerial CompositeSerial;
 
 #define PRODUCT_ID 0x29
 
+//#define DEBUG
+
+#ifdef DEBUG
+FAT16RootDirEntry rootDir[4+2*FAT16_NUM_ROOT_DIR_ENTRIES_FOR_LFN(255)+8];
+#else
 FAT16RootDirEntry rootDir[4+2*FAT16_NUM_ROOT_DIR_ENTRIES_FOR_LFN(255)];
+#endif
 
 char filename[255];
 char stellaFilename[255];
@@ -45,6 +51,11 @@ int gameNumber = -1;
 unsigned dataPins[8] = { PB4,PB3,PA15,PA10,PA9,PA8,PB15,PB14 };
 unsigned addressPins[13] = { PA0,PA1,PA2,PA3,PA4,PA5,PA6,PA7,PB0,PB1,PB11,PB10,PC15 };
 uint32_t romSize;
+uint32_t portStart;
+uint32_t portEnd;
+uint32_t port2Start;
+uint32_t port2End;
+bool dpc;
 char stellaExtension[5];
 const uint32_t* hotspots = NULL;
 const uint32_t hotspots_F6[] = { 0xff6, 0xff7, 0xff8, 0xff9 };
@@ -55,6 +66,7 @@ uint32_t numHotspots = 0;
 int lastBank = -1;
 uint32_t crc;
 uint8_t detectBuffer[128];
+uint8_t blankValue;
 
 // crc32 adapted from https://github.com/aeldidi/crc32/blob/master/src/crc32.c
 
@@ -123,17 +135,33 @@ uint32_t crcRange(uint32_t start, uint32_t count) {
 
 uint8_t read(uint32_t address) {
   digitalWrite(addressPins[12], 0);
+  delayMicroseconds(2);
   for (unsigned i = 0 ; i < 13 ; i++, address >>= 1) {
     digitalWrite(addressPins[i], address & 1);
   }
-  delayMicroseconds(10);
   digitalWrite(addressPins[12], 1);
+  delayMicroseconds(8); //TODO:?order
   uint8_t datum = 0;
   for (int i = 7 ; i >= 0 ; i--) {
     datum = (datum << 1) | digitalRead(dataPins[i]);
   }
 
   return datum;
+}
+
+uint8_t write(uint32_t address, uint8_t value) {
+  digitalWrite(addressPins[12], 0);  
+  delayMicroseconds(2);  
+  for (unsigned i = 0 ; i < 8 ; i++, value>>=1) {
+    pinMode(dataPins[i], (value & 1) ? INPUT_PULLUP : INPUT_PULLDOWN);
+  }
+  for (unsigned i = 0 ; i < 13 ; i++, address >>= 1) {
+    digitalWrite(addressPins[i], address & 1);
+  }
+  digitalWrite(addressPins[12], 1);
+  delayMicroseconds(8);
+
+  dataPinState(INPUT);
 }
 
 inline bool switchHotspot(uint32_t hotspot, bool raiseD0) {
@@ -147,7 +175,22 @@ inline bool switchHotspot(uint32_t hotspot, bool raiseD0) {
   }
 }
 
+// in theory, we could do sequential reads and it would be faster, but why bother?
+uint8_t readDPCGraphics(uint16_t address) {
+  write(0x1050, address & 0xFF);
+  write(0x1058, address >> 8);
+  return read(0x1008);
+}
+
 uint8_t bankedRead(uint32_t address) {
+  if (dpc && address >= romSize - 2048) {
+    return readDPCGraphics(2047 - (address - (romSize-2048)));
+  }
+  uint32_t address4k = address % 4096;
+  if (portStart <= address4k && address4k < portEnd)
+    return blankValue;
+  if (port2Start <= address4k && address4k < port2End)
+    return blankValue;
   if (numHotspots == 0)
     return read(address);
   int bank = address / 4096;
@@ -155,12 +198,11 @@ uint8_t bankedRead(uint32_t address) {
     switchHotspot(hotspots[bank], hotspots == hotspots_FA);
     lastBank = bank;
   }
-  uint16_t maskedAddress = address % 4096;
-  uint8_t value = read(maskedAddress);
+  uint8_t value = read(address4k);
   // check if what we read is one of the hotspots, so that
   // we unintentionally swapped banks
   for (int i=0; i<numHotspots; i++) {
-    if (hotspots[i] == maskedAddress) {
+    if (hotspots[i] == address4k) {
      lastBank = i;
      break;
     }
@@ -190,11 +232,12 @@ bool diff(uint32_t hotspot1,uint32_t hotspot2, bool D0) {
     detectBuffer[j] = read(i);
   switchHotspot(hotspot2, D0);
   for (unsigned i=512,j=0;i<0x0FF0; (i+=37),j++)
-    if (detectBuffer[j] != read(i))
+    if (!(0x800<=i && i<0x880) && detectBuffer[j] != read(i)) // skip DPC port
       return true;
   return false;
 }
 
+/*
 bool detectExtraRAM() {
   // if the first 128 bytes don't change between banks, they're probably RAM
   // TODO: smarter way to check!
@@ -212,10 +255,24 @@ bool detectExtraRAM() {
         return false;
   }
 }
+*/
 
 void dataPinState(WiringPinMode state) {
   for (unsigned i = 0 ; i < 8 ; i++)
     pinMode(dataPins[i], state);  
+}
+
+bool detectWritePort(uint32_t address) { 
+  uint8_t x;
+  dataPinState(INPUT_PULLUP);
+  x = read(address);
+  dataPinState(INPUT);
+  if (x != 0xFF)
+    return false;
+  dataPinState(INPUT_PULLDOWN);
+  x = read(address);
+  dataPinState(INPUT);
+  return x == 0;
 }
 
 bool detectCartridge(void) {
@@ -232,11 +289,41 @@ bool check2k(void) {
   return true;
 }
 
+bool detectDPC(void) {
+  // detect the random number generate at location0
+  read(0x70);
+  uint8_t r0 = read(1);
+  for (unsigned i = 0 ; i < 200 ; i++) {
+    delayMicroseconds(10);
+    uint8_t x = read(1);
+    if (x != r0)
+      return true;
+  }
+  return false;
+}
+
 void identifyCartridge() {
   const char* msg = NULL;
   bool checkRAM = false;
+  dpc = false;
+  portStart = 0;
+  portEnd = 0;
+  port2Start = 0;
+  port2End = 0;
   strcpy(info, "Cartridge type: ");
-  if (diff(hotspots_F4[0],hotspots_F4[7],false)) {
+  if (detectDPC() && diff(hotspots_F8[0],hotspots_F8[1],false)) {
+    strcpy(stellaExtension, ".dpc"); // check
+    strcat(info + strlen(info), "F8+DPC");
+    hotspots = hotspots_F8;
+    numHotspots = sizeof(hotspots_F8)/sizeof(*hotspots_F8);
+    dpc = true;
+    portStart = 0;
+    portEnd = 0x80;
+    port2Start = 0x800;
+    port2End = 0x880;
+    romSize = 8192+2048;
+  }
+  else if (diff(hotspots_F4[0],hotspots_F4[7],false)) {
     hotspots = hotspots_F4;
     numHotspots = sizeof(hotspots_F4)/sizeof(*hotspots_F4);
     strcat(info, "F4");
@@ -282,19 +369,38 @@ void identifyCartridge() {
       romSize = 4096;
     }
   }
-  if (checkRAM && detectExtraRAM()) {
-    strcat(info, "SC");
-    strcat(stellaExtension, "s");
-  }
-  lastBank = -1;
-  crc = romCRC(0, romSize);
-  gameNumber = -1;
-  for (int i = 0 ; i < sizeof database / sizeof *database ; i++) {
-    if (romSize == database[i].size && crc == database[i].crc) {
-      gameNumber = i;
-      break;
+  if (checkRAM) {
+    if (detectWritePort(0)) {
+      if (hotspots == hotspots_FA) {
+        portStart = 0;
+        portEnd = 512;
+      }
+      else {
+        // Super Chip
+        portStart = 0;
+        portEnd = 256;
+        strcat(info, "SC");
+        strcat(stellaExtension, "s");
+      }
     }
   }
+  lastBank = -1;
+  gameNumber = -1;
+  blankValue = 0;
+  do 
+  {
+    crc = romCRC(0, romSize); 
+    for (int i = 0 ; i < sizeof database / sizeof *database ; i++) {
+      if (romSize == database[i].size && crc == database[i].crc) {
+        gameNumber = i;
+        break;
+      }
+    }
+    if (gameNumber >= 0 || blankValue == 0xFF || portEnd <= portStart)
+      break;
+    blankValue = 0;
+  }
+  while (1);
   sprintf(info+strlen(info), "\r\nSize: %u\nCRC-32: %08x\nGame: %s\n", 
     romSize,
     crc,
@@ -352,6 +458,16 @@ bool fileReader(uint8_t *buf, const char* name, uint32_t sector, uint32_t sector
     generateHTML(buf, sector, sectorCount);
     return true;
   }
+#ifdef DEBUG  
+  else {
+    unsigned hotspot;
+    sscanf(name, "%x", &hotspot);
+    read(hotspot);
+    for (unsigned i = sector * FAT16_SECTOR_SIZE ; i < sector * FAT16_SECTOR_SIZE + FAT16_SECTOR_SIZE ; i++)
+      buf[i - sector * FAT16_SECTOR_SIZE] = read(i);
+    return true;
+  }
+#endif  
   return false;
 }
 
@@ -382,7 +498,13 @@ void setup() {
   FAT16AddFile("GAME.A26", romSize);
   FAT16AddLFN(stellaShortName, stellaFilename);
   FAT16AddFile(stellaShortName, romSize);
-
+#ifdef DEBUG
+  for (unsigned i = 0 ; i < 8; i++) {
+    char buf[5];
+    sprintf(buf, "%04X", hotspots_F4[i]);
+    FAT16AddFile(buf, 4096);
+  }
+#endif
   USBComposite.setProductId(PRODUCT_ID);
   MassStorage.setDriveData(0, FAT16_NUM_SECTORS, FAT16ReadSectors, write);
   MassStorage.registerComponent();
@@ -399,4 +521,3 @@ void loop() {
 }
 
 
-// ET = c3e930e6

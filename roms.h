@@ -464,7 +464,7 @@ static struct {
 { "Picnic (USA)", 4096, 0x1D507A61 },
 { "Piece o' Cake (USA)", 4096, 0x40355166 },
 { "Pigs in Space - Starring Miss Piggy (USA)", 8192, 0x27673D7C },
-{ "Pitfall II - Lost Caverns (USA)", 10495, 0x097CE7AD },
+{ "Pitfall II - Lost Caverns (USA)", 10240, 0x566dfd55 }, // corrected
 { "Pitfall! - Pitfall Harry's Jungle Adventure (USA)", 4096, 0x42AD47BF },
 { "Pizza Chef (USA) (Proto)", 4096, 0xA240F751 },
 { "Planet Patrol (USA)", 4096, 0x1E8EBB51 },
