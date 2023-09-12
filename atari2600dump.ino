@@ -13,6 +13,9 @@
  *   PA7  PA6  PA5  PA4  PA3  PA2  PA1  PA0  PB4  PB3  PA15
  */
 
+// cartridge types theoretically supported: 2K, 4K, F4, F6, F8, FA, FE, DPC, plus Super Chip variants
+// tested: F8, DPC
+
 #include <ctype.h>
 #include <USBComposite.h>
 #include "FAT16ReadOnly.h"
@@ -55,9 +58,10 @@ uint32_t portStart;
 uint32_t portEnd;
 uint32_t port2Start;
 uint32_t port2End;
-bool dpc;
 char stellaExtension[5];
 const uint32_t* hotspots = NULL;
+#define MAPPER_DPC 0xD0
+uint8_t mapper;
 const uint32_t hotspots_F6[] = { 0xff6, 0xff7, 0xff8, 0xff9 };
 const uint32_t hotspots_F8[] = { 0xff8, 0xff9 };
 const uint32_t hotspots_F4[] = { 0xff4, 0xff5, 0xff6, 0xff7, 0xff8, 0xff9, 0xffa, 0xffb };
@@ -134,9 +138,14 @@ uint32_t crcRange(uint32_t start, uint32_t count) {
 }
 
 uint8_t read(uint32_t address) {
+  if (mapper == 0xFE) {
+    // this is a kludge to prevent an accidental access to 0x01xx 
+    digitalWrite(addressPins[12], 1);
+    digitalWrite(addressPins[8], 0);
+  }
   digitalWrite(addressPins[12], 0);
   delayMicroseconds(2);
-  for (unsigned i = 0 ; i < 13 ; i++, address >>= 1) {
+  for (unsigned i = 0 ; i < 12 ; i++, address >>= 1) {
     digitalWrite(addressPins[i], address & 1);
   }
   digitalWrite(addressPins[12], 1);
@@ -149,29 +158,41 @@ uint8_t read(uint32_t address) {
   return datum;
 }
 
-uint8_t write(uint32_t address, uint8_t value) {
-  digitalWrite(addressPins[12], 0);  
-  delayMicroseconds(2);  
+// write with no initial A12 toggle
+uint8_t write0(uint32_t address, uint8_t value) {
   for (unsigned i = 0 ; i < 8 ; i++, value>>=1) {
     pinMode(dataPins[i], (value & 1) ? INPUT_PULLUP : INPUT_PULLDOWN);
   }
   for (unsigned i = 0 ; i < 13 ; i++, address >>= 1) {
     digitalWrite(addressPins[i], address & 1);
   }
-  digitalWrite(addressPins[12], 1);
   delayMicroseconds(8);
 
   dataPinState(INPUT);
 }
 
-inline bool switchHotspot(uint32_t hotspot, bool raiseD0) {
-  if (raiseD0) {
-      pinMode(dataPins[0], INPUT_PULLUP); // D0 must be high to switch banks on FA: https://patents.google.com/patent/US4485457A/en
-      read(hotspot);
-      pinMode(dataPins[0], INPUT);       
+uint8_t write(uint32_t address, uint8_t value) {
+  digitalWrite(addressPins[12], 0);  
+  delayMicroseconds(2);  
+  write0(address, value);
+}
+
+void switchBankFE(uint8_t bank) {
+    write0(0x01FE, 0xF0^(bank<<5));
+    write0(0x01FE, 0xF0^(bank<<5));
+}
+
+void switchBank(uint8_t bank) {
+  if (mapper == 0xFE) {
+    switchBankFE(bank);
   }
-  else {
-      read(hotspot);
+  else if (mapper == 0xFA) {
+    pinMode(dataPins[0], INPUT_PULLUP); // D0 must be high to switch banks on FA: https://patents.google.com/patent/US4485457A/en
+    read(hotspots[bank]);
+    pinMode(dataPins[0], INPUT);       
+  }
+  else if (numHotspots > 0) {
+    read(hotspots[bank]);
   }
 }
 
@@ -183,7 +204,7 @@ uint8_t readDPCGraphics(uint16_t address) {
 }
 
 uint8_t bankedRead(uint32_t address) {
-  if (dpc && address >= romSize - 2048) {
+  if (mapper == MAPPER_DPC && address >= romSize - 2048) {
     return readDPCGraphics(2047 - (address - (romSize-2048)));
   }
   uint32_t address4k = address % 4096;
@@ -191,16 +212,16 @@ uint8_t bankedRead(uint32_t address) {
     return blankValue;
   if (port2Start <= address4k && address4k < port2End)
     return blankValue;
-  if (numHotspots == 0)
+  if (romSize <= 4096)
     return read(address);
   int bank = address / 4096;
   if (bank != lastBank) {
-    switchHotspot(hotspots[bank], hotspots == hotspots_FA);
+    switchBank(bank);
     lastBank = bank;
   }
   uint8_t value = read(address4k);
   // check if what we read is one of the hotspots, so that
-  // we unintentionally swapped banks
+  // we might have unintentionally swapped banks
   for (int i=0; i<numHotspots; i++) {
     if (hotspots[i] == address4k) {
      lastBank = i;
@@ -223,14 +244,29 @@ uint32_t romCRC(unsigned start, unsigned count) {
   return ~result;
 }
 
-bool diff(uint32_t hotspot1,uint32_t hotspot2, bool D0) {
+bool diff(uint8_t _mapper, const uint32_t* _hotspots, unsigned _numHotspots, uint8_t b1, uint8_t b2) {
+  mapper = _mapper;
+  hotspots = _hotspots;
+  numHotspots = _numHotspots;
   // sample memory space every 37 bytes, skipping a potential RAM space at the beginning; this is nearly certain to pick up a difference 
   // between banks if there is a difference
   // detectBuffer is large enough for this sampling
-  switchHotspot(hotspot1, D0);
+  switchBank(b1);
   for (unsigned i=512,j=0;i<0x0FF0; (i+=37),j++)
     detectBuffer[j] = read(i);
-  switchHotspot(hotspot2, D0);
+  switchBank(b2);
+  for (unsigned i=512,j=0;i<0x0FF0; (i+=37),j++)
+    if (!(0x800<=i && i<0x880) && detectBuffer[j] != read(i)) // skip DPC port
+      return true;
+  return false;
+}
+
+bool detectFE() {
+  mapper = 0xFE;
+  switchBankFE(0);
+  for (unsigned i=512,j=0;i<0x0FF0; (i+=37),j++)
+    detectBuffer[j] = read(i);  
+  switchBankFE(1);
   for (unsigned i=512,j=0;i<0x0FF0; (i+=37),j++)
     if (!(0x800<=i && i<0x880) && detectBuffer[j] != read(i)) // skip DPC port
       return true;
@@ -308,57 +344,71 @@ bool detectDPC(void) {
 void identifyCartridge() {
   const char* msg = NULL;
   bool checkRAM = false;
-  dpc = false;
   portStart = 0;
   portEnd = 0;
   port2Start = 0;
   port2End = 0;
   strcpy(info, "Cartridge type: ");
-  if (detectDPC() && diff(hotspots_F8[0],hotspots_F8[1],false)) {
+  
+  if (detectDPC()) {
+    mapper = MAPPER_DPC;
     strcpy(stellaExtension, ".dpc"); // check
     strcat(info + strlen(info), "F8+DPC");
     hotspots = hotspots_F8;
     numHotspots = sizeof(hotspots_F8)/sizeof(*hotspots_F8);
-    dpc = true;
     portStart = 0;
     portEnd = 0x80;
     port2Start = 0x800;
     port2End = 0x880;
     romSize = 8192+2048;
   }
-  else if (diff(hotspots_F4[0],hotspots_F4[7],false)) {
+  else if (diff(0xF4,hotspots_F4,8,0,7)) {
+    mapper = 0xF4;
     hotspots = hotspots_F4;
-    numHotspots = sizeof(hotspots_F4)/sizeof(*hotspots_F4);
+    numHotspots = 8;
     strcat(info, "F4");
     strcpy(stellaExtension, ".f4");
     romSize = numHotspots * 4096;
     checkRAM = true;
   }
-  else if (diff(hotspots_F6[0],hotspots_F6[1],false)) {
+  else if (diff(0xF6,hotspots_F6,4,0,1)) {
+    mapper = 0xF6;
     hotspots = hotspots_F6;
-    numHotspots = sizeof(hotspots_F6)/sizeof(*hotspots_F6);
+    numHotspots = 4;
     strcpy(stellaExtension, ".f6");
     strcat(info, "F6");
     romSize = numHotspots * 4096;
     checkRAM = true;
   }
-  else if (diff(hotspots_FA[1],hotspots_FA[2],true)) {
+  else if (diff(0xFA,hotspots_FA,3,1,2)) {
+    mapper = 0xFA;
     hotspots = hotspots_FA;
-    numHotspots = sizeof(hotspots_FA)/sizeof(*hotspots_FA);
+    numHotspots = 3;
     strcpy(stellaExtension, ".fa");
     strcat(info, "FA");
     romSize = numHotspots * 4096; 
     checkRAM = true;
   } 
-  else if (diff(hotspots_F8[0],hotspots_F8[1],false)) {
+  else if (diff(0xF8,hotspots_F8,2,0,1)) {
+    mapper = 0xF8;
     hotspots = hotspots_F8;
-    numHotspots = sizeof(hotspots_F8)/sizeof(*hotspots_F8);
+    numHotspots = 2;
     strcpy(stellaExtension, ".f8");
     strcat(info, "F8");
     romSize = numHotspots * 4096;
     checkRAM = true;
   }
+  else if (detectFE()) {
+    mapper = 0xFE;
+    hotspots = NULL;
+    numHotspots = 0;
+    strcpy(stellaExtension, ".fe");
+    strcat(info, "FE");
+    romSize = 8192;
+    checkRAM = false;
+  }
   else {
+    mapper = 0;
     hotspots = NULL;
     numHotspots = 0;
     if (check2k()) {
@@ -372,9 +422,10 @@ void identifyCartridge() {
       romSize = 4096;
     }
   }
+  
   if (checkRAM) {
     if (detectWritePort(0)) {
-      if (hotspots == hotspots_FA) {
+      if (mapper == 0xFA) {
         portStart = 0;
         portEnd = 512;
       }
@@ -387,6 +438,7 @@ void identifyCartridge() {
       }
     }
   }
+  
   lastBank = -1;
   gameNumber = -1;
   blankValue = 0;
@@ -427,7 +479,7 @@ void identifyCartridge() {
   *q = 0;
 }
 
-bool write(const uint8_t *writebuff, uint32_t memoryOffset, uint16_t transferLength) {
+bool nullWrite(const uint8_t *writebuff, uint32_t memoryOffset, uint16_t transferLength) {
   return false;
 }
 
@@ -510,7 +562,7 @@ void setup() {
   }
 #endif
   USBComposite.setProductId(PRODUCT_ID);
-  MassStorage.setDriveData(0, FAT16_NUM_SECTORS, FAT16ReadSectors, write);
+  MassStorage.setDriveData(0, FAT16_NUM_SECTORS, FAT16ReadSectors, nullWrite);
   MassStorage.registerComponent();
 
   USBComposite.begin();

@@ -1,6 +1,6 @@
 See wiring instructions in code.
 
-The only bankswitching currently supported is F4, F6, F8 and FA.
+The only bankswitching currently supported is F4, F6, F8, FA, FE and DPC.
 
 I always use Roger's libmaple-based core rather than the official STM32 core, because USBComposite only works with libmaple, and libmaple is also less bloated.
 
