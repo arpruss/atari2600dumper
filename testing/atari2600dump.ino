@@ -1,5 +1,3 @@
-// TODO: E7, 3F
-
 
 /*
  * You need 21 pins, 8 of them (data) 5V tolerant. The assignments below
@@ -19,6 +17,7 @@
 // tested: F8, DPC
 
 #include <ctype.h>
+#include "libmaple/bitband.h"
 #include <USBComposite.h>
 #include "FAT16ReadOnly.h"
 #include "base64.h"
@@ -29,6 +28,7 @@ USBCompositeSerial CompositeSerial;
 #define PRODUCT_ID 0x29
 
 //#define DEBUG
+#define USE_BITBAND
 
 #ifdef DEBUG
 FAT16RootDirEntry rootDir[4+2*FAT16_NUM_ROOT_DIR_ENTRIES_FOR_LFN(255)+8];
@@ -53,8 +53,19 @@ const char launch_htm_1[]="';Javatari.preLoadImagesAndStart();</script></body></
 
 int gameNumber = -1;
 
-unsigned dataPins[8] = { PB4,PB3,PA15,PA10,PA9,PA8,PB15,PB14 };
-unsigned addressPins[13] = { PA0,PA1,PA2,PA3,PA4,PA5,PA6,PA7,PB0,PB1,PB11,PB10,PC15 };
+gpio_dev* dataPort[8];
+uint8_t dataBit[8];
+gpio_dev* addressPort[13];
+uint8_t addressBit[13];
+
+const unsigned dataPins[8] = { PB4,PB3,PA15,PA10,PA9,PA8,PB15,PB14 };
+const unsigned addressPins[13] = { PA0,PA1,PA2,PA3,PA4,PA5,PA6,PA7,PB0,PB1,PB11,PB10,PC15 };
+#ifdef USE_BITBAND
+volatile uint32_t* addressWriteBitband[13];
+volatile uint32_t* dataReadBitband[8];
+volatile uint32_t* dataWriteBitband[8];
+#endif
+
 uint32_t romSize;
 uint32_t portStart;
 uint32_t portEnd;
@@ -74,8 +85,26 @@ uint32_t crc;
 uint8_t detectBuffer[128];
 uint8_t blankValue;
 
-// crc32 adapted from https://github.com/aeldidi/crc32/blob/master/src/crc32.c
+#ifdef USE_BITBAND
+volatile uint32_t* getWriteBitband(gpio_dev* port, uint8_t bitNumber) {
+  return (volatile uint32_t*)bb_perip( &(port->regs->ODR), bitNumber);
+}
 
+volatile uint32_t* getReadBitband(gpio_dev* port, uint8_t bitNumber) {
+  return (volatile uint32_t*)bb_perip( &(port->regs->IDR), bitNumber);
+}
+
+void setBitbands() {
+  for (unsigned i = 0 ; i < 13 ; i++)
+    addressWriteBitband[i] = getWriteBitband(addressPort[i], addressBit[i]);
+  for (unsigned i = 0 ; i < 9 ; i++) {
+    dataWriteBitband[i] = getWriteBitband(dataPort[i], dataBit[i]);
+    dataReadBitband[i] = getReadBitband(dataPort[i], dataBit[i]);
+  }
+}
+#endif
+
+// crc32 adapted from https://github.com/aeldidi/crc32/blob/master/src/crc32.c
 uint32_t crc32_for_byte(uint32_t byte)
 {
   const uint32_t polynomial = 0xEDB88320L;
@@ -139,32 +168,22 @@ uint32_t crcRange(uint32_t start, uint32_t count) {
   return ~result;
 }
 
+#ifdef USE_BITBAND
 uint8_t read(uint32_t address) {
   if (mapper == 0xFE) {
-    // to prevent an accidental access to 0x01xx, we write bit 8 last
-    digitalWrite(addressPins[8], 0);
-    digitalWrite(addressPins[12], 0);
-    delayMicroseconds(2);
-    uint8_t bit8 = (address >> 8) & 1;
-    for (unsigned i = 0 ; i < 12 ; i++, address >>= 1) {
-      if (i != 8)
-        digitalWrite(addressPins[i], address & 1);
-    }
-    digitalWrite(addressPins[8], bit8);
-    digitalWrite(addressPins[12], 1);
+    // this is a kludge to prevent an accidental access to 0x01xx 
+    *(addressWriteBitband[8]) = 0;
   }
-  else {
-    digitalWrite(addressPins[12], 0);
-    delayMicroseconds(2);
-    for (unsigned i = 0 ; i < 12 ; i++, address >>= 1) {
-      digitalWrite(addressPins[i], address & 1);
-    }
-    digitalWrite(addressPins[12], 1);
+  *(addressWriteBitband[12]) = 0;
+  delayMicroseconds(2);
+  for (unsigned i = 0 ; i < 12 ; i++, address >>= 1) {
+    *(addressWriteBitband[i]) = address & 1;
   }
+  *(addressWriteBitband[12]) = 1;
   delayMicroseconds(4); 
-  uint8_t datum = 0;
+  uint32_t datum = 0;
   for (int i = 7 ; i >= 0 ; i--) {
-    datum = (datum << 1) | digitalRead(dataPins[i]);
+    datum = (datum << 1) | *(dataReadBitband[i]);
   }
 
   return datum;
@@ -173,21 +192,63 @@ uint8_t read(uint32_t address) {
 // write but don't zero A12
 uint8_t write0(uint32_t address, uint8_t value) {
   for (unsigned i = 0 ; i < 8 ; i++, value>>=1) {
-    pinMode(dataPins[i], (value & 1) ? INPUT_PULLUP : INPUT_PULLDOWN);
+    gpio_set_mode(dataPort[i], dataBit[i], (value & 1) ? GPIO_INPUT_PU : GPIO_INPUT_PD);
   }
   for (unsigned i = 0 ; i < 13 ; i++, address >>= 1) {
-    digitalWrite(addressPins[i], address & 1);
+    *(addressWriteBitband[i]) = address & 1;
   }
   delayMicroseconds(4);
 
-  dataPinState(INPUT);
+  dataPinState(GPIO_INPUT_FLOATING);
 }
 
 uint8_t write(uint32_t address, uint8_t value) {
-  digitalWrite(addressPins[12], 0);  
+  *(addressWriteBitband[12]) = 0;
   delayMicroseconds(2);  
   write0(address, value);
 }
+
+#else
+
+uint8_t read(uint32_t address) {
+  if (mapper == 0xFE) {
+    // this is a kludge to prevent an accidental access to 0x01xx 
+    gpio_write_bit(addressPort[8], addressBit[8], 0);
+  }
+  gpio_write_bit(addressPort[12], addressBit[12], 0);
+  delayMicroseconds(2);
+  for (unsigned i = 0 ; i < 12 ; i++, address >>= 1) {
+    gpio_write_bit(addressPort[i], addressBit[i], address & 1);
+  }
+  gpio_write_bit(addressPort[12], addressBit[12], 1);
+  delayMicroseconds(4); 
+  uint8_t datum = 0;
+  for (int i = 7 ; i >= 0 ; i--) {
+    datum = (datum << 1) | (gpio_read_bit(dataPort[i], dataBit[i]) ? 1:0);
+  }
+
+  return datum;
+}
+
+// write but don't zero A12
+uint8_t write0(uint32_t address, uint8_t value) {
+  for (unsigned i = 0 ; i < 8 ; i++, value>>=1) {
+    gpio_set_mode(dataPort[i], dataBit[i], (value & 1) ? GPIO_INPUT_PU : GPIO_INPUT_PD);
+  }
+  for (unsigned i = 0 ; i < 13 ; i++, address >>= 1) {
+    gpio_write_bit(addressPort[i], addressBit[i], address & 1);
+  }
+  delayMicroseconds(4);
+
+  dataPinState(GPIO_INPUT_FLOATING);
+}
+
+uint8_t write(uint32_t address, uint8_t value) {
+  gpio_write_bit(addressPort[12], addressBit[12], 0);  
+  delayMicroseconds(2);  
+  write0(address, value);
+}
+#endif
 
 void switchBankFE(uint8_t bank) {
     write0(0x01FE, 0xF0^(bank<<5));
@@ -199,9 +260,9 @@ void switchBank(uint8_t bank) {
     switchBankFE(bank);
   }
   else if (mapper == 0xFA) {
-    pinMode(dataPins[0], INPUT_PULLUP); // D0 must be high to switch banks on FA: https://patents.google.com/patent/US4485457A/en
+    gpio_set_mode(dataPort[0], dataBit[0], GPIO_INPUT_PU); // D0 must be high to switch banks on FA: https://patents.google.com/patent/US4485457A/en
     read(hotspots[bank]);
-    pinMode(dataPins[0], INPUT);       
+    gpio_set_mode(dataPort[0], dataBit[0], GPIO_INPUT_FLOATING);       
   }
   else if (numHotspots > 0) {
     read(hotspots[bank]);
@@ -305,28 +366,28 @@ bool detectExtraRAM() {
 }
 */
 
-void dataPinState(WiringPinMode state) {
+void dataPinState(gpio_pin_mode state) {
   for (unsigned i = 0 ; i < 8 ; i++)
-    pinMode(dataPins[i], state);  
+    gpio_set_mode(dataPort[i], dataBit[i], state);  
 }
 
 bool detectWritePort(uint32_t address) { 
   uint8_t x;
-  dataPinState(INPUT_PULLUP);
+  dataPinState(GPIO_INPUT_PU);
   x = read(address);
-  dataPinState(INPUT);
+  dataPinState(GPIO_INPUT_FLOATING);
   if (x != 0xFF)
     return false;
-  dataPinState(INPUT_PULLDOWN);
+  dataPinState(GPIO_INPUT_PD);
   x = read(address);
-  dataPinState(INPUT);
+  dataPinState(GPIO_INPUT_FLOATING);
   return x == 0;
 }
 
 bool detectCartridge(void) {
-  dataPinState(INPUT_PULLUP);
+  dataPinState(GPIO_INPUT_PU);
   uint16_t reset = read(0xFFC) | ((uint16_t)read(0xFFD)<<8);
-  dataPinState(INPUT);
+  dataPinState(GPIO_INPUT_FLOATING);
   return reset != 0xFFFF;
 }
 
@@ -551,9 +612,19 @@ void waitForCartridge() {
 }
 
 void setup() {
-  dataPinState(INPUT);
-  for (unsigned i = 0 ; i < 13 ; i++)
-    pinMode(addressPins[i], OUTPUT);
+  for (unsigned i = 0 ; i < 13 ; i++) {
+    addressPort[i] = PIN_MAP[addressPins[i]].gpio_device;
+    addressBit[i] = PIN_MAP[addressPins[i]].gpio_bit;
+    gpio_set_mode(addressPort[i], addressBit[i], GPIO_OUTPUT_PP);
+  }
+  for (unsigned i = 0 ; i < 8 ; i++) {
+    dataPort[i] = PIN_MAP[dataPins[i]].gpio_device;
+    dataBit[i] = PIN_MAP[dataPins[i]].gpio_bit;
+  }
+#ifdef USE_BITBAND  
+  setBitbands();
+#endif  
+  dataPinState(GPIO_INPUT_FLOATING);
   pinMode(LED, OUTPUT);
   digitalWrite(LED,!LED_ON);
   waitForCartridge();
@@ -588,5 +659,6 @@ void loop() {
     nvic_sys_reset();
   MassStorage.loop();
 }
+
 
 
