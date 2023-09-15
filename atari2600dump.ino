@@ -60,12 +60,13 @@ int gameNumber = -1;
 const unsigned dataPins[8] = { PB3,PB4,PB10,PB11,PB12,PB13,PB14,PB15 };
 const unsigned addressPins[13] = { PA0,PA1,PA2,PA3,PA4,PA5,PA6,PA7,PA8,PA9,PA10, PA15,PC15 };
 #ifdef PARALLEL
-gpio_dev* const dataPort = GPIOB;
-const unsigned dataBits[8] = {3,4,10,11,12,13,14,15};
+//gpio_dev* const dataPort = GPIOB;
+//const unsigned dataBits[8] = {3,4,10,11,12,13,14,15};
 gpio_reg_map* const mainAddressRegs = GPIOA_BASE;
 const uint32_t mainAddressPortMask = 0b1000011111111111;
 gpio_reg_map* const bit12AddressRegs = GPIOC_BASE;
 const uint32_t bit12AddressPortMask = 0b1000000000000000;
+volatile uint32_t* const dataRead = &(GPIOB->regs->IDR);
 volatile uint32_t* const addressBit12Write = bb_perip( &(GPIOC->regs->ODR), 15);
 volatile uint32_t* const addressBit8Write = bb_perip( &(GPIOA->regs->ODR), 8);
 #endif
@@ -166,6 +167,12 @@ inline void setAddress(uint32_t address) {
     bit12AddressRegs->BSRR = bsrr12;
 }
 
+inline uint8_t readDataByte() {
+  uint32_t x = *dataRead;
+  // pins: 3,4,10,11,12,13,14,15 -> bits 0-7
+  return ((x>>3)&0b11)|( (x>>(10-2)) & 0b11111100);
+}
+
 uint8_t read(uint32_t address) {
   if (mapper == 0xFE) {
     // to prevent an accidental access to 0x01xx, we clear bit 8 early on
@@ -175,12 +182,8 @@ uint8_t read(uint32_t address) {
   delayMicroseconds(2); // I don't know if this delay is needed
   setAddress(address|0x1000);
   delayMicroseconds(2); // 1 microsecond should work, but some clone stm boards make delayMicroseconds be half of what it should be
-  uint8_t datum = 0;
-  for (int i = 7 ; i >= 0 ; i--) {
-    datum = (datum << 1) | digitalRead(dataPins[i]);
-  }
-
-  return datum;
+  
+  return readDataByte();
 }
 
 // write but don't zero A12 first
