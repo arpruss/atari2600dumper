@@ -5,7 +5,8 @@
  * You need 21 pins, 8 of them (data) 5V tolerant. The assignments below
  * are for an stm32f103c8t6 blue pill.
  *
- * This is the view if you are facing the console:
+ * View if you are facing the console:
+ * View if you are facing the console:
  *             PB0  PB1  PB11 PB10 PC15 PB14 PB15 PA8  PA9  PA10
  * --------------------------------------------------------------
  * | GND  5V   A8   A9   A11  A10  A12  D7   D6   D5   D4   D3  |
@@ -27,6 +28,8 @@ USBMassStorage MassStorage;
 USBCompositeSerial CompositeSerial;
 
 #define PRODUCT_ID 0x29
+
+#define INPUTX INPUT
 
 //#define DEBUG
 
@@ -181,7 +184,7 @@ uint8_t write0(uint32_t address, uint8_t value) {
   }
   delayMicroseconds(4);
 
-  dataPinState(INPUT);
+  dataPinState(INPUTX);
 }
 
 uint8_t write(uint32_t address, uint8_t value) {
@@ -315,20 +318,24 @@ bool detectWritePort(uint32_t address) {
   uint8_t x;
   dataPinState(INPUT_PULLUP);
   x = read(address);
-  dataPinState(INPUT);
+  dataPinState(INPUTX);
   if (x != 0xFF)
     return false;
   dataPinState(INPUT_PULLDOWN);
   x = read(address);
-  dataPinState(INPUT);
+  dataPinState(INPUTX);
   return x == 0;
 }
 
-bool detectCartridge(void) {
+bool detectCartridge(uint32_t* valueP=NULL) {
   dataPinState(INPUT_PULLUP);
-  uint16_t reset = read(0xFFC) | ((uint16_t)read(0xFFD)<<8);
-  dataPinState(INPUT);
-  return reset != 0xFFFF;
+  uint32_t dataUp = read(0xFFC) | ((uint16_t)read(0xFFD)<<8) | (read(0x200)<<16) | (read(0x307)<<24);
+  dataPinState(INPUT_PULLDOWN);
+  uint32_t dataDown = read(0xFFC) | ((uint16_t)read(0xFFD)<<8) | (read(0x200)<<16) | (read(0x307)<<24);
+  if (valueP != NULL)
+    *valueP = dataUp;
+  dataPinState(INPUTX);
+  return dataUp == dataDown;
 }
 
 bool check2k(void) {
@@ -543,23 +550,32 @@ bool fileReader(uint8_t *buf, const char* name, uint32_t sector, uint32_t sector
 void waitForCartridge() {
   while (true) {
     uint32_t start = millis();
-    while (detectCartridge()) {
-      if (millis() - start >= CARTRIDGE_KEEP_TIME_MILLIS)
-        return;
-      delay(2);
+    uint32_t value;
+    uint32_t firstValue;
+    if (detectCartridge(&firstValue)) {
+      while (detectCartridge(&value) && value == firstValue) {
+        if (millis() - start >= CARTRIDGE_KEEP_TIME_MILLIS)
+          return;
+        delay(2);
+      }
     }
   }
 }
 
 void setup() {
-  dataPinState(INPUT);
+  dataPinState(INPUTX);
   for (unsigned i = 0 ; i < 13 ; i++)
     pinMode(addressPins[i], OUTPUT);
   pinMode(LED, OUTPUT);
   digitalWrite(LED,!LED_ON);
   waitForCartridge();
   identifyCartridge();
+
   digitalWrite(LED,LED_ON);
+  delay(200);
+  if (crc != romCRC(0,romSize))
+    nvic_sys_reset(); // in case cartridge hasn't stabilized
+  digitalWrite(LED,!LED_ON);
 
   FAT16SetRootDir(rootDir, sizeof(rootDir)/sizeof(*rootDir), fileReader);
   FAT16AddFile("LAUNCH.HTM", sizeof(launch_htm_0)-1+sizeof(launch_htm_1)-1+BASE64_ENCSIZE(romSize));
@@ -581,12 +597,13 @@ void setup() {
 
   USBComposite.begin();
   while(!USBComposite);  
+
+  digitalWrite(LED,LED_ON);
 }
 
 
 void loop() {
-  if (!detectCartridge())
-    nvic_sys_reset();
+  if (!detectCartridge()) nvic_sys_reset();
   MassStorage.loop();
 }
 
