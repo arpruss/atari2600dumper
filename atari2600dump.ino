@@ -29,6 +29,7 @@ USBCompositeSerial CompositeSerial;
 
 #define PRODUCT_ID 0x29
 
+#define PARALLEL
 #define INPUTX INPUT
 
 //#define DEBUG
@@ -56,8 +57,18 @@ const char launch_htm_1[]="';Javatari.preLoadImagesAndStart();</script></body></
 
 int gameNumber = -1;
 
-unsigned dataPins[8] = { PB3,PB4,PB10,PB11,PB12,PB13,PB14,PB15 };
-unsigned addressPins[13] = { PA0,PA1,PA2,PA3,PA4,PA5,PA6,PA7,PA8, PA9, PA10,PA15,PC15 };
+const unsigned dataPins[8] = { PB3,PB4,PB10,PB11,PB12,PB13,PB14,PB15 };
+const unsigned addressPins[13] = { PA0,PA1,PA2,PA3,PA4,PA5,PA6,PA7,PA8,PA9,PA10, PA15,PC15 };
+#ifdef PARALLEL
+gpio_dev* const dataPort = GPIOB;
+const unsigned dataBits[8] = {3,4,10,11,12,13,14,15};
+gpio_reg_map* const mainAddressRegs = GPIOA_BASE;
+const uint32_t mainAddressPortMask = 0b1000011111111111;
+gpio_reg_map* const bit12AddressRegs = GPIOC_BASE;
+const uint32_t bit12AddressPortMask = 0b1000000000000000;
+volatile uint32_t* const addressBit12Write = bb_perip( &(GPIOC->regs->ODR), 15);
+volatile uint32_t* const addressBit8Write = bb_perip( &(GPIOA->regs->ODR), 8);
+#endif
 
 uint32_t romSize;
 uint32_t portStart;
@@ -143,29 +154,27 @@ uint32_t crcRange(uint32_t start, uint32_t count) {
   return ~result;
 }
 
+inline void setAddress(uint32_t address) {
+    uint32_t mainAddressPortValue = (address & 0x7ff) | ( (address & 0x800) << (15-11));
+  
+    register uint32_t bsrr = (mainAddressPortValue) | ( ((~mainAddressPortValue) & mainAddressPortMask) << 16);
+    uint32_t bit12AddressPortValue = (address & 0x1000) << (15-12);
+    register uint32_t bsrr12 = (bit12AddressPortValue) | ( ((~bit12AddressPortValue) & bit12AddressPortMask) << 16);
+
+    // *nearly* atomic address write; the order does matter in practice
+    mainAddressRegs->BSRR = bsrr;
+    bit12AddressRegs->BSRR = bsrr12;
+}
+
 uint8_t read(uint32_t address) {
   if (mapper == 0xFE) {
-    // to prevent an accidental access to 0x01xx, we write bit 8 last
-    digitalWrite(addressPins[8], 0);
-    digitalWrite(addressPins[12], 0);
-    delayMicroseconds(2);
-    uint8_t bit8 = (address >> 8) & 1;
-    for (unsigned i = 0 ; i < 12 ; i++, address >>= 1) {
-      if (i != 8)
-        digitalWrite(addressPins[i], address & 1);
-    }
-    digitalWrite(addressPins[8], bit8);
-    digitalWrite(addressPins[12], 1);
+    // to prevent an accidental access to 0x01xx, we clear bit 8 early on
+    *addressBit8Write = 0;
   }
-  else {
-    digitalWrite(addressPins[12], 0);
-    delayMicroseconds(2);
-    for (unsigned i = 0 ; i < 12 ; i++, address >>= 1) {
-      digitalWrite(addressPins[i], address & 1);
-    }
-    digitalWrite(addressPins[12], 1);
-  }
-  delayMicroseconds(4); 
+  *addressBit12Write = 0;
+  delayMicroseconds(2); // I don't know if this delay is needed
+  setAddress(address|0x1000);
+  delayMicroseconds(2); // 1 microsecond should work, but some clone stm boards make delayMicroseconds be half of what it should be
   uint8_t datum = 0;
   for (int i = 7 ; i >= 0 ; i--) {
     datum = (datum << 1) | digitalRead(dataPins[i]);
@@ -174,14 +183,12 @@ uint8_t read(uint32_t address) {
   return datum;
 }
 
-// write but don't zero A12
-uint8_t write0(uint32_t address, uint8_t value) {
+// write but don't zero A12 first
+uint8_t rawWrite(uint32_t address, uint8_t value) {
   for (unsigned i = 0 ; i < 8 ; i++, value>>=1) {
     pinMode(dataPins[i], (value & 1) ? INPUT_PULLUP : INPUT_PULLDOWN);
   }
-  for (unsigned i = 0 ; i < 13 ; i++, address >>= 1) {
-    digitalWrite(addressPins[i], address & 1);
-  }
+  setAddress(address);
   delayMicroseconds(4);
 
   dataPinState(INPUTX);
@@ -190,12 +197,12 @@ uint8_t write0(uint32_t address, uint8_t value) {
 uint8_t write(uint32_t address, uint8_t value) {
   digitalWrite(addressPins[12], 0);  
   delayMicroseconds(2);  
-  write0(address, value);
+  rawWrite(address, value);
 }
 
 void switchBankFE(uint8_t bank) {
-    write0(0x01FE, 0xF0^(bank<<5));
-    write0(0x01FE, 0xF0^(bank<<5));
+    rawWrite(0x01FE, 0xF0^(bank<<5));
+    rawWrite(0x01FE, 0xF0^(bank<<5));
 }
 
 void switchBank(uint8_t bank) {
@@ -351,9 +358,11 @@ uint8_t lfsr(uint8_t LFSR) {
 
 bool detectDPC(void) {
   // detect the random number generator 
+  *addressBit12Write = 0;
   read(0x70);
   uint8_t x = 0;
   for (int i=0; i<8; i++) {
+    *addressBit12Write = 0;
     if (read(0) != x)
       return false;
     x = lfsr(x);
