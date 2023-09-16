@@ -23,6 +23,8 @@
 #include <USBComposite.h>
 #include "FAT16ReadOnly.h"
 #include "base64.h"
+#include "roms.h"
+#include "dwt.h"
 
 USBMassStorage MassStorage;
 USBCompositeSerial CompositeSerial;
@@ -37,9 +39,9 @@ USBCompositeSerial CompositeSerial;
 const char inconsistent[] = "Inconsistent Read!";
 
 #ifdef DEBUG
-FAT16RootDirEntry rootDir[5+2*FAT16_NUM_ROOT_DIR_ENTRIES_FOR_LFN(255)+8+1];
+FAT16RootDirEntry rootDir[5+2*FAT16_NUM_ROOT_DIR_ENTRIES_FOR_LFN(LONGEST_FILENAME)+8+1];
 #else
-FAT16RootDirEntry rootDir[5+2*FAT16_NUM_ROOT_DIR_ENTRIES_FOR_LFN(255)+FAT16_NUM_ROOT_DIR_ENTRIES_FOR_LFN(sizeof(inconsistent))];
+FAT16RootDirEntry rootDir[5+2*FAT16_NUM_ROOT_DIR_ENTRIES_FOR_LFN(LONGEST_FILENAME)+FAT16_NUM_ROOT_DIR_ENTRIES_FOR_LFN(sizeof(inconsistent)-1)];
 #endif
 
 #define NO_HOTPLUG 0
@@ -59,10 +61,9 @@ const char launch_htm_0[]="<!DOCTYPE html><html lang='en'><head><meta charset='U
 const char launch_htm_1[]="';Javatari.preLoadImagesAndStart();</script></body></html>\n";
 
 #define CARTRIDGE_KEEP_TIME_MILLIS 2000 // cartridge must be kept in this long to register
+#define FALLBACK_TO_NONFINICKY   10000 // after 10 sec, give up waiting for reliable reads and just assume it's an unreliable cartridge
 #define LED    PC13
 #define LED_ON 0
-
-#include "roms.h"
 
 int gameNumber = -1;
 
@@ -75,8 +76,8 @@ const uint32_t mainAddressPortMask = 0b1000011111111111;
 gpio_reg_map* const bit12AddressRegs = GPIOC_BASE;
 const uint32_t bit12AddressPortMask = 0b1000000000000000;
 gpio_reg_map* const dataRegs = GPIOB_BASE;
-volatile uint32_t* const addressBit12Write = bb_perip( &(GPIOC->regs->ODR), 15);
-volatile uint32_t* const addressBit8Write = bb_perip( &(GPIOA->regs->ODR), 8);
+volatile uint32_t* const addressBit12Write = bb_perip( &(bit12AddressRegs->ODR), 15);
+volatile uint32_t* const addressBit8Write = bb_perip( &(mainAddressRegs->ODR), 8);
 #endif
 
 uint32_t romSize;
@@ -187,9 +188,9 @@ uint8_t read(uint32_t address) {
     *addressBit8Write = 0;
   }
   *addressBit12Write = 0;
-  delayMicroseconds(2); // I don't know if this delay is needed
+  DWTDelayMicroseconds(1); // I don't know if this delay is needed
   setAddress(address|0x1000);
-  delayMicroseconds(2); // 1 microsecond should work, but some clone stm boards make delayMicroseconds be half of what it should be
+  DWTDelayMicroseconds(1); 
   
   return readDataByte();
 }
@@ -200,14 +201,14 @@ uint8_t rawWrite(uint32_t address, uint8_t value) {
     pinMode(dataPins[i], (value & 1) ? INPUT_PULLUP : INPUT_PULLDOWN);
   }
   setAddress(address);
-  delayMicroseconds(4);
+  DWTDelayMicroseconds(3); // probably can be a lot shorter, but let's be super sure it registers
 
   dataPinState(INPUTX);
 }
 
 uint8_t write(uint32_t address, uint8_t value) {
   digitalWrite(addressPins[12], 0);  
-  delayMicroseconds(2);  
+  DWTDelayMicroseconds(1);  
   rawWrite(address, value);
 }
 
@@ -505,7 +506,7 @@ void identifyCartridge() {
     blankValue = 0xFF;
   }
   while (1);
-  sprintf(info+strlen(info), "\r\nSize: %u\nCRC-32: %08x\nGame: %s\n", 
+  sprintf(info+strlen(info), "\r\nSize: %u\r\nCRC-32: %08x\r\nGame: %s\r\n", 
     romSize,
     crc,
     gameNumber < 0 ? "unidentified" : database[gameNumber].name);
@@ -515,13 +516,16 @@ void identifyCartridge() {
     strcpy(label, "2600 Cart");
   }
   else {
-    const char* n = database[gameNumber].name;
-    strcpy(filename, n);
+    strcpy((char*)detectBuffer, database[gameNumber].name);
+    char* p = strstr((char*)detectBuffer, " (");
+    if (p != NULL)
+      *p = 0;
+    strcpy(filename, (char*)detectBuffer);
     strcat(filename, ".a26");
-    strcpy(stellaFilename, n);
+    strcpy(stellaFilename, (char*)detectBuffer);
     unsigned i;
-    for (i = 0 ; i < 11 && n[i] && n[i] != '('; i++) {
-      label[i] = n[i];
+    for (i = 0 ; i < 11 && detectBuffer[i] && detectBuffer[i] != '('; i++) {
+      label[i] = detectBuffer[i];
     }
     label[i] = 0;
   }
@@ -661,7 +665,7 @@ void setup() {
       continue;
     delay(200);
     newCRC = romCRC(0,romSize);
-  } while(hotplug && crc != newCRC && millis() - lastNoCartridgeTime < 10000); // after 10 sec, give up and just assume it's an unreliable cartridge
+  } while(hotplug && crc != newCRC && millis() - lastNoCartridgeTime < FALLBACK_TO_NONFINICKY); 
 
   digitalWrite(LED,!LED_ON);
 
@@ -671,6 +675,7 @@ void setup() {
     finicky = false;
     FAT16AddLFN("INCONSIS.TXT", inconsistent);
     FAT16AddFile("INCONSIS.TXT", 0);
+    strcat(info, "Inconsistent reading detected\r\n");
   }
   FAT16AddFile("LAUNCH.HTM", sizeof(launch_htm_0)-1+sizeof(launch_htm_1)-1+BASE64_ENCSIZE(romSize));
   FAT16AddFile("INFO.TXT", strlen(info)); // room for CRC-32 and crlf

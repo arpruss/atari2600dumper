@@ -1,4 +1,4 @@
-static struct {
+static const struct {
     const char* name;
     uint16_t size;
     uint32_t crc;
@@ -464,7 +464,7 @@ static struct {
 { "Picnic (USA)", 4096, 0x1D507A61 },
 { "Piece o' Cake (USA)", 4096, 0x40355166 },
 { "Pigs in Space - Starring Miss Piggy (USA)", 8192, 0x27673D7C },
-{ "Pitfall II - Lost Caverns (USA)", 10240, 0x566dfd55 }, // corrected
+{ "Pitfall II - Lost Caverns (USA)", 10240, 0x566dfd55 },
 { "Pitfall! - Pitfall Harry's Jungle Adventure (USA)", 4096, 0x42AD47BF },
 { "Pizza Chef (USA) (Proto)", 4096, 0xA240F751 },
 { "Planet Patrol (USA)", 4096, 0x1E8EBB51 },
@@ -727,3 +727,4 @@ static struct {
 { "Zoo Fun (USA)", 4096, 0xC1DA05F6 },
 { "Zoo Keeper Sounds (USA) (Proto)", 2048, 0xAE15C45D },
 };
+#define LONGEST_FILENAME 83
