@@ -35,7 +35,7 @@ USBCompositeSerial CompositeSerial;
 //#define DEBUG
 
 #ifdef DEBUG
-FAT16RootDirEntry rootDir[4+2*FAT16_NUM_ROOT_DIR_ENTRIES_FOR_LFN(255)+8];
+FAT16RootDirEntry rootDir[4+2*FAT16_NUM_ROOT_DIR_ENTRIES_FOR_LFN(255)+8+1];
 #else
 FAT16RootDirEntry rootDir[4+2*FAT16_NUM_ROOT_DIR_ENTRIES_FOR_LFN(255)];
 #endif
@@ -44,6 +44,7 @@ char filename[255];
 char stellaFilename[255];
 char stellaShortName[] = "GAME.XXX";
 char info[FAT16_SECTOR_SIZE];
+char label[12];
 const char launch_htm_0[]="<!DOCTYPE html><html lang='en'><head><meta charset='UTF-8'><title>Javatari</title><meta name='description' content='Javatari - The online Atari 2600 emulator'></head>"
 "<body><div id='javatari' style='text-align: center; margin: 20px auto 0; padding: 0 10px;'><div id='javatari-screen' style='box-shadow: 2px 2px 10px rgba(0, 0, 0, .7);'></div></div>"
 "<script src='https://arpruss.github.io/javatari/javatari.js'></script><script>Javatari.CARTRIDGE_URL = 'data:application/octet-stream;base64,";
@@ -495,11 +496,18 @@ void identifyCartridge() {
   if (gameNumber < 0) {
     strcpy(filename, "game.a26");
     strcpy(stellaFilename, "game");
+    strcpy(label, "2600 Cart");
   }
   else {
-    strcpy(filename, database[gameNumber].name);
+    const char* n = database[gameNumber].name;
+    strcpy(filename, n);
     strcat(filename, ".a26");
-    strcpy(stellaFilename, database[gameNumber].name);
+    strcpy(stellaFilename, n);
+    unsigned i;
+    for (i = 0 ; i < 11 && n[i] && n[i] != '('; i++) {
+      label[i] = n[i];
+    }
+    label[i] = 0;
   }
   strcat(stellaFilename, stellaExtension);
   const char* p = stellaExtension;
@@ -578,17 +586,28 @@ void setup() {
   for (unsigned i = 0 ; i < 13 ; i++)
     pinMode(addressPins[i], OUTPUT);
   pinMode(LED, OUTPUT);
-  digitalWrite(LED,!LED_ON);
-  waitForCartridge();
-  identifyCartridge();
 
-  digitalWrite(LED,LED_ON);
-  delay(200);
-  if (crc != romCRC(0,romSize))
-    nvic_sys_reset(); // in case cartridge hasn't stabilized
+  bool firstTime = true;
+  
+  do {
+    if (!firstTime) {
+      delay(1000);
+    }
+    else {
+      firstTime = false;
+    }
+    digitalWrite(LED,!LED_ON);
+    waitForCartridge();
+    identifyCartridge();
+  
+    digitalWrite(LED,LED_ON);
+    delay(200);
+  } while(crc != romCRC(0,romSize));
+  
   digitalWrite(LED,!LED_ON);
 
   FAT16SetRootDir(rootDir, sizeof(rootDir)/sizeof(*rootDir), fileReader);
+  FAT16AddLabel(label);
   FAT16AddFile("LAUNCH.HTM", sizeof(launch_htm_0)-1+sizeof(launch_htm_1)-1+BASE64_ENCSIZE(romSize));
   FAT16AddFile("INFO.TXT", strlen(info)); // room for CRC-32 and crlf
   FAT16AddLFN("GAME.A26", filename);
@@ -603,6 +622,7 @@ void setup() {
   }
 #endif
   USBComposite.setProductId(PRODUCT_ID);
+  USBComposite.clear();
   MassStorage.setDriveData(0, FAT16_NUM_SECTORS, FAT16ReadSectors, nullWrite);
   MassStorage.registerComponent();
 
@@ -614,7 +634,13 @@ void setup() {
 
 
 void loop() {
-  if (!detectCartridge()) nvic_sys_reset();
+  if (!detectCartridge()) {
+    USBComposite.end();
+    digitalWrite(LED,!LED_ON);
+    delay(500);
+    setup();
+//    nvic_sys_reset();
+  }
   MassStorage.loop();
 }
 

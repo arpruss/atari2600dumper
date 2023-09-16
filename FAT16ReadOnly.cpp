@@ -150,6 +150,28 @@ FAT16RootDirEntry* FAT16AddFile(const char* name, uint32_t size) {
   return rootDir+i;
 }
 
+void FAT16AddLabel(const char* name) {
+  int i;
+  for (i=0 ; i<rootDirEntries && rootDir[i].name[0] ; i++);
+  if (i >= rootDirEntries)
+    return;
+  int len = strlen(name);
+  for (int j = 0 ; j < 11 ; j++) {
+    if (j < len) 
+      rootDir[i].name[j] = name[j];
+    else
+      rootDir[i].name[j] = ' ';
+  }
+  rootDir[i].size = 0;
+  rootDir[i].accessedDate = FAT16_DATE(2023,1,1);
+  rootDir[i].createdDate = FAT16_DATE(2023,1,1);
+  rootDir[i].modifiedDate = FAT16_DATE(2023,1,1);
+  rootDir[i].createdTime = FAT16_TIME(12,0,0);
+  rootDir[i].modifiedTime = FAT16_TIME(12,0,0);
+  rootDir[i].attributes = 8;
+  rootDir[i].cluster = 0;
+}
+
 bool FAT16AddLFN(const char* shortName, const char* longName) {
   // todo: reverse order of parts
   // see: https://www.win.tue.nl/~aeb/linux/fs/fat/fat-1.html
