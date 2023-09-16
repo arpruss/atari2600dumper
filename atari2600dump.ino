@@ -34,14 +34,18 @@ USBCompositeSerial CompositeSerial;
 
 //#define DEBUG
 
+const char inconsistent[] = "Inconsistent Read!";
+
 #ifdef DEBUG
-FAT16RootDirEntry rootDir[4+2*FAT16_NUM_ROOT_DIR_ENTRIES_FOR_LFN(255)+8+1];
+FAT16RootDirEntry rootDir[5+2*FAT16_NUM_ROOT_DIR_ENTRIES_FOR_LFN(255)+8+1];
 #else
-FAT16RootDirEntry rootDir[4+2*FAT16_NUM_ROOT_DIR_ENTRIES_FOR_LFN(255)];
+FAT16RootDirEntry rootDir[5+2*FAT16_NUM_ROOT_DIR_ENTRIES_FOR_LFN(255)+FAT16_NUM_ROOT_DIR_ENTRIES_FOR_LFN(sizeof(inconsistent))];
 #endif
 
 #define NO_HOTPLUG 0
 bool hotplug = true;
+bool finicky = true;
+uint32_t lastNoCartridgeTime; // last time we had no cartridge at all (not finicky about this)
 char force[4] = "";
 bool restart = false;
 char filename[255];
@@ -341,7 +345,7 @@ bool detectWritePort(uint32_t address) {
   return x == 0;
 }
 
-bool detectCartridge(uint32_t* valueP=NULL) {
+bool detectCartridge(bool finickyMode, uint32_t* valueP=NULL) {
   dataPinState(INPUT_PULLUP);
   uint32_t dataUp = read(0xFFC) | ((uint16_t)read(0xFFD)<<8) | (read(0x200)<<16) | (read(0x307)<<24);
   dataPinState(INPUT_PULLDOWN);
@@ -349,7 +353,15 @@ bool detectCartridge(uint32_t* valueP=NULL) {
   if (valueP != NULL)
     *valueP = dataUp;
   dataPinState(INPUTX);
-  return dataUp == dataDown;
+  bool cartridge = dataUp != 0xFFFFFFFF || dataDown != 0;
+  if (!cartridge)
+    lastNoCartridgeTime = millis();
+  if (finickyMode) {
+    return dataUp == dataDown;
+  }
+  else {
+    return cartridge;
+  }
 }
 
 bool check2k(void) {
@@ -600,11 +612,17 @@ void waitForCartridge() {
     uint32_t start = millis();
     uint32_t value;
     uint32_t firstValue;
-    if (detectCartridge(&firstValue)) {
-      while (detectCartridge(&value) && value == firstValue) {
+    if (detectCartridge(finicky, &firstValue)) {
+      if (!finicky)
+        return;
+      while (detectCartridge(finicky, &value) && value == firstValue) {
         if (millis() - start >= CARTRIDGE_KEEP_TIME_MILLIS)
           return;
         delay(2);
+      }
+      if (millis() - lastNoCartridgeTime >= 8000) {
+        // unreliable, but that may be the best we get
+        return;
       }
     }
   }
@@ -619,7 +637,12 @@ void setup() {
   pinMode(LED, OUTPUT);
 
   bool firstTime = true;
+  lastNoCartridgeTime = millis();
   
+  finicky = hotplug;
+
+  uint32_t newCRC;
+
   do {
     if (!firstTime) {
       delay(1000);
@@ -633,13 +656,22 @@ void setup() {
     identifyCartridge();
   
     digitalWrite(LED,LED_ON);
+
+    if (hotplug && !detectCartridge(false))
+      continue;
     delay(200);
-  } while(hotplug && !force[0] && crc != romCRC(0,romSize));
-  
+    newCRC = romCRC(0,romSize);
+  } while(hotplug && crc != newCRC && millis() - lastNoCartridgeTime < 10000); // after 10 sec, give up and just assume it's an unreliable cartridge
+
   digitalWrite(LED,!LED_ON);
 
   FAT16SetRootDir(rootDir, sizeof(rootDir)/sizeof(*rootDir), fileReader);
   FAT16AddLabel(label);
+  if (crc != newCRC) {
+    finicky = false;
+    FAT16AddLFN("INCONSIS.TXT", inconsistent);
+    FAT16AddFile("INCONSIS.TXT", 0);
+  }
   FAT16AddFile("LAUNCH.HTM", sizeof(launch_htm_0)-1+sizeof(launch_htm_1)-1+BASE64_ENCSIZE(romSize));
   FAT16AddFile("INFO.TXT", strlen(info)); // room for CRC-32 and crlf
   FAT16AddLFN("GAME.A26", filename);
@@ -666,7 +698,7 @@ void setup() {
 
 
 void loop() {
-  if (restart || (hotplug && !detectCartridge())) {
+  if (restart || (hotplug && !detectCartridge(finicky))) {
     restart = false;
     digitalWrite(LED,!LED_ON);
     USBComposite.end();

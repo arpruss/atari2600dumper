@@ -145,8 +145,13 @@ FAT16RootDirEntry* FAT16AddFile(const char* name, uint32_t size) {
   rootDir[i].modifiedDate = FAT16_DATE(2023,1,1);
   rootDir[i].createdTime = FAT16_TIME(12,0,0);
   rootDir[i].modifiedTime = FAT16_TIME(12,0,0);
-  rootDir[i].cluster = 0xFFFF;
-  updateClusters();
+  if (size) {
+    rootDir[i].cluster = 0xFFFF;
+    updateClusters();
+  }
+  else {
+    rootDir[i].cluster = 0;
+  }
   return rootDir+i;
 }
 
