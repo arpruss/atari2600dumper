@@ -40,6 +40,10 @@ FAT16RootDirEntry rootDir[4+2*FAT16_NUM_ROOT_DIR_ENTRIES_FOR_LFN(255)+8+1];
 FAT16RootDirEntry rootDir[4+2*FAT16_NUM_ROOT_DIR_ENTRIES_FOR_LFN(255)];
 #endif
 
+#define NO_HOTPLUG 0
+bool hotplug = true;
+char force[4] = "";
+bool restart = false;
 char filename[255];
 char stellaFilename[255];
 char stellaShortName[] = "GAME.XXX";
@@ -382,7 +386,7 @@ void identifyCartridge() {
   port2End = 0;
   strcpy(info, "Cartridge type: ");
   
-  if (detectDPC()) {
+  if (!strcmp(force, "dpc") || (!force[0] && detectDPC())) {
     mapper = MAPPER_DPC;
     strcpy(stellaExtension, ".dpc"); // check
     strcat(info + strlen(info), "F8+DPC");
@@ -394,7 +398,7 @@ void identifyCartridge() {
     port2End = 0x880;
     romSize = 8192+2048;
   }
-  else if (diff(0xF4,hotspots_F4,8,0,7)) {
+  else if (!strncmp(force, "f4", 2) || (!force[0] && diff(0xF4,hotspots_F4,8,0,7))) {
     mapper = 0xF4;
     hotspots = hotspots_F4;
     numHotspots = 8;
@@ -403,7 +407,7 @@ void identifyCartridge() {
     romSize = numHotspots * 4096;
     checkRAM = true;
   }
-  else if (diff(0xF6,hotspots_F6,4,0,1)) {
+  else if (!strncmp(force, "f6", 2) || (!force[0] && diff(0xF6,hotspots_F6,4,0,1))) {
     mapper = 0xF6;
     hotspots = hotspots_F6;
     numHotspots = 4;
@@ -412,7 +416,7 @@ void identifyCartridge() {
     romSize = numHotspots * 4096;
     checkRAM = true;
   }
-  else if (diff(0xFA,hotspots_FA,3,1,2)) {
+  else if (!strncmp(force, "fa", 2) || (!force[0] && diff(0xFA,hotspots_FA,3,1,2))) {
     mapper = 0xFA;
     hotspots = hotspots_FA;
     numHotspots = 3;
@@ -421,7 +425,7 @@ void identifyCartridge() {
     romSize = numHotspots * 4096; 
     checkRAM = true;
   } 
-  else if (diff(0xF8,hotspots_F8,2,0,1)) {
+  else if (!strncmp(force,"f8", 2) || (!force[0] && diff(0xF8,hotspots_F8,2,0,1))) {
     mapper = 0xF8;
     hotspots = hotspots_F8;
     numHotspots = 2;
@@ -430,7 +434,7 @@ void identifyCartridge() {
     romSize = numHotspots * 4096;
     checkRAM = true;
   }
-  else if (detectFE()) {
+  else if (!strncmp(force, "fe", 2) || (!force[0] && detectFE())) {
     mapper = 0xFE;
     hotspots = NULL;
     numHotspots = 0;
@@ -443,7 +447,7 @@ void identifyCartridge() {
     mapper = 0;
     hotspots = NULL;
     numHotspots = 0;
-    if (check2k()) {
+    if (!strcmp(force, "2k") || (!force[0] && check2k())) {
       strcpy(stellaExtension, ".2k");
       strcat(info, "2K");
       romSize = 2048;      
@@ -456,7 +460,7 @@ void identifyCartridge() {
   }
   
   if (checkRAM) {
-    if (detectWritePort(0)) {
+    if (!strcmp(force, "fa") || (force[0] && force[2]=='s') || (!force[0] && detectWritePort(0))) {
       if (mapper == 0xFA) {
         portStart = 0;
         portEnd = 512;
@@ -520,6 +524,31 @@ void identifyCartridge() {
 }
 
 bool nullWrite(const uint8_t *writebuff, uint32_t memoryOffset, uint16_t transferLength) {
+  if (!strncmp((const char*)writebuff, "command:", 8)) {
+    const char* p = (const char*)writebuff+8;
+    if (!strncmp(p, "reboot", 6))
+      nvic_sys_reset();
+    else if (!strncmp(p, "hotplug", 7)) {
+      hotplug = true;
+      EEPROM8_storeValue(NO_HOTPLUG, 0);
+    }
+    else if (!strncmp(p, "nohotplug", 9)) {
+      hotplug = false;
+      EEPROM8_storeValue(NO_HOTPLUG, 1);
+    }
+    else if (!strncmp(p, "noforce", 7)) {
+      force[0] = 0;
+      restart = true;
+    }
+    else if (!strncmp(p, "force:", 6)) {
+      p += 6;
+      unsigned i = 0;
+      while (*p && *p != '\r' && *p != '\n' && i<3)
+        force[i++] = *p++;
+      force[i] = 0;
+      restart = true;
+    }
+  }
   return false;
 }
 
@@ -582,6 +611,8 @@ void waitForCartridge() {
 }
 
 void setup() {
+  EEPROM8_init();
+  hotplug = !EEPROM8_getValue(NO_HOTPLUG);
   dataPinState(INPUTX);
   for (unsigned i = 0 ; i < 13 ; i++)
     pinMode(addressPins[i], OUTPUT);
@@ -597,12 +628,13 @@ void setup() {
       firstTime = false;
     }
     digitalWrite(LED,!LED_ON);
-    waitForCartridge();
+    if (hotplug)
+      waitForCartridge();
     identifyCartridge();
   
     digitalWrite(LED,LED_ON);
     delay(200);
-  } while(crc != romCRC(0,romSize));
+  } while(hotplug && !force[0] && crc != romCRC(0,romSize));
   
   digitalWrite(LED,!LED_ON);
 
@@ -634,9 +666,10 @@ void setup() {
 
 
 void loop() {
-  if (!detectCartridge()) {
-    USBComposite.end();
+  if (restart || (hotplug && !detectCartridge())) {
+    restart = false;
     digitalWrite(LED,!LED_ON);
+    USBComposite.end();
     delay(500);
     setup();
 //    nvic_sys_reset();
