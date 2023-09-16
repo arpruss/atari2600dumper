@@ -60,13 +60,12 @@ int gameNumber = -1;
 const unsigned dataPins[8] = { PB3,PB4,PB10,PB11,PB12,PB13,PB14,PB15 };
 const unsigned addressPins[13] = { PA0,PA1,PA2,PA3,PA4,PA5,PA6,PA7,PA8,PA9,PA10, PA15,PC15 };
 #ifdef PARALLEL
-//gpio_dev* const dataPort = GPIOB;
 //const unsigned dataBits[8] = {3,4,10,11,12,13,14,15};
 gpio_reg_map* const mainAddressRegs = GPIOA_BASE;
 const uint32_t mainAddressPortMask = 0b1000011111111111;
 gpio_reg_map* const bit12AddressRegs = GPIOC_BASE;
 const uint32_t bit12AddressPortMask = 0b1000000000000000;
-volatile uint32_t* const dataRead = &(GPIOB->regs->IDR);
+gpio_reg_map* const dataRegs = GPIOB_BASE;
 volatile uint32_t* const addressBit12Write = bb_perip( &(GPIOC->regs->ODR), 15);
 volatile uint32_t* const addressBit8Write = bb_perip( &(GPIOA->regs->ODR), 8);
 #endif
@@ -157,18 +156,21 @@ uint32_t crcRange(uint32_t start, uint32_t count) {
 
 inline void setAddress(uint32_t address) {
     uint32_t mainAddressPortValue = (address & 0x7ff) | ( (address & 0x800) << (15-11));
+    uint32_t odr = (mainAddressRegs->ODR & ~mainAddressPortMask) | mainAddressPortValue;
   
-    register uint32_t bsrr = (mainAddressPortValue) | ( ((~mainAddressPortValue) & mainAddressPortMask) << 16);
     uint32_t bit12AddressPortValue = (address & 0x1000) << (15-12);
-    register uint32_t bsrr12 = (bit12AddressPortValue) | ( ((~bit12AddressPortValue) & bit12AddressPortMask) << 16);
+
+    uint32_t odr12 = (bit12AddressRegs->ODR & ~bit12AddressPortMask) | bit12AddressPortValue;
 
     // *nearly* atomic address write; the order does matter in practice
-    mainAddressRegs->BSRR = bsrr;
-    bit12AddressRegs->BSRR = bsrr12;
+    nvic_globalirq_disable();
+    mainAddressRegs->ODR = odr;
+    bit12AddressRegs->ODR = odr12;
+    nvic_globalirq_enable();
 }
 
 inline uint8_t readDataByte() {
-  uint32_t x = *dataRead;
+  uint32_t x = dataRegs->IDR;
   // pins: 3,4,10,11,12,13,14,15 -> bits 0-7
   return ((x>>3)&0b11)|( (x>>(10-2)) & 0b11111100);
 }
@@ -618,5 +620,6 @@ void loop() {
   if (!detectCartridge()) nvic_sys_reset();
   MassStorage.loop();
 }
+
 
 
