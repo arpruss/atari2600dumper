@@ -156,17 +156,14 @@ uint32_t crcRange(uint32_t start, uint32_t count) {
 
 inline void setAddress(uint32_t address) {
     uint32_t mainAddressPortValue = (address & 0x7ff) | ( (address & 0x800) << (15-11));
-    uint32_t odr = (mainAddressRegs->ODR & ~mainAddressPortMask) | mainAddressPortValue;
   
+    register uint32_t bsrr = (mainAddressPortValue) | ( ((~mainAddressPortValue) & mainAddressPortMask) << 16);
     uint32_t bit12AddressPortValue = (address & 0x1000) << (15-12);
-
-    uint32_t odr12 = (bit12AddressRegs->ODR & ~bit12AddressPortMask) | bit12AddressPortValue;
+    register uint32_t bsrr12 = (bit12AddressPortValue) | ( ((~bit12AddressPortValue) & bit12AddressPortMask) << 16);
 
     // *nearly* atomic address write; the order does matter in practice
-    nvic_globalirq_disable();
-    mainAddressRegs->ODR = odr;
-    bit12AddressRegs->ODR = odr12;
-    nvic_globalirq_enable();
+    mainAddressRegs->BSRR = bsrr;
+    bit12AddressRegs->BSRR = bsrr12;
 }
 
 inline uint8_t readDataByte() {
