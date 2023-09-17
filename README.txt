@@ -1,12 +1,13 @@
-See wiring instructions in code.
+In theory, the bankswitching of all classic cartridge types other than F0 and UA is supported,
+and they should all detect.
 
-The only bankswitching currently supported is F4, F6, F8, FA, FE and DPC.
+In practice, only F8 and DPC have been tested. Very likely a number will fail to autodetect or dump.
 
 Once you have a cartridge inserted successfully, you can send some commands to the device.
-Simply write the command to a dummy file on the device. E.g., on Windows:
+Simply write the command to a dummy file on the device (the filename doesn't matter!). E.g., on Windows:
     echo command:reboot > e:\dummy.txt
 Or on Linux:
-    echo command:reboot > /mnt/drive
+    echo command:reboot > /mnt/drive/dummy.txt
     
 Here are the commands currently supported:
     command:hotplug 
@@ -25,6 +26,8 @@ Here are the commands currently supported:
         Reset the device.
 
 BUILDING
+
+See wiring instructions in code.
 
 I always use Roger's libmaple-based core rather than the official STM32 core, because USBComposite only works with libmaple, and libmaple is also less bloated.
 

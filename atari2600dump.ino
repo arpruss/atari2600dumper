@@ -13,8 +13,9 @@
  *   PA7  PA6  PA5  PA4  PA3  PA2  PA1  PA0  PB4  PB3  PA15
  */
 
-// cartridge types theoretically supported: 2K, 4K, 3F, CV, E7, F4, F6, F8, FA, FE, DPC, plus Super Chip variants
-// tested only: F8, DPC
+// cartridge types theoretically supported: 2K, 4K, 3F, CV, E0, E7, F4, F6, F8, FA, FE, DPC, plus Super Chip variants
+// classic types not supported: F0, UA
+// tested: F8, DPC
 
 #include <ctype.h>
 #include <USBComposite.h>
@@ -101,6 +102,9 @@ const uint32_t hotspots_F4[] = { 0xff4, 0xff5, 0xff6, 0xff7, 0xff8, 0xff9, 0xffa
 const uint32_t hotspots_FA[] = { 0xff8, 0xff9, 0xffa }; 
 const uint32_t hotspotsE7Start = 0xfe0;
 const uint32_t hotspotsE7End = 0xfeb;
+const uint32_t hotspotsE0Start = 0xfe0;
+const uint32_t hotspotsE0End = 0xfe7;
+const uint32_t hotspotsE01800Start = 0x1ff0;
 #define LEN(x) = (sizeof((x))/sizeof(*(x)))
 uint32_t numHotspots = 0;
 int lastBank = -1;
@@ -191,7 +195,7 @@ void summarizeOptions(void) {
     " command:hotplug\r\n"
     " command:nohotplug\r\n"
     " command:force:XXX\r\n"
-    "   XXX = 2k, 4k, 3f, cv, e7, f4, f4s, f6, f6s, f8, f8s, fa, fe, dpc\r\n"
+    "   XXX = 2k, 4k, 3f, cv, e0, e7, f4, f4s, f6, f6s, f8, f8s, fa, fe, dpc\r\n"
     " command:noforce\r\n"
     " command:stellaext\r\n"
     " command:nostellaext\r\n");
@@ -285,6 +289,15 @@ uint8_t readDPCGraphics(uint16_t address) {
   return read(0x1008);
 }
 
+uint8_t readE0(uint32_t address) {
+  uint8_t bank = address / 1024;
+  if (bank != lastBank) {
+    read(hotspotsE01800Start+bank);
+    lastBank = bank;
+  }
+  return read(0x1800 + (address % 1024));
+}
+
 uint8_t readE7(uint32_t address) {
   if (address >= (romSize - 2048)) {
     uint32_t readAddress = address + 4096 - romSize;
@@ -324,6 +337,17 @@ bool distinct(const uint32_t* data, unsigned count) {
   return true;
 }
 
+bool detectE0() {
+  read(hotspotsE01800Start);
+  for (unsigned i=512,j=0;i<1024; (i+=7),j++)
+    detectBuffer[j] = read(0x800+i);  
+  read(hotspotsE01800Start+1);
+  for (unsigned i=512,j=0;i<1024; (i+=7),j++)
+    if (detectBuffer[j] != read(0x800+i))
+      return false;
+  return true;  
+}
+
 bool detectE7() {
   mapper = 0xE7;
   read(0xfe4);
@@ -342,7 +366,7 @@ bool detectE7() {
   // OK, so it's E7. Now we need to count the banks
   
   for (unsigned i=0; i<7; i++) {
-    read(0xFE0+i);
+    read(hotspotsE7Start+i);
     bankCRC[i] = unbankedCRC(512,1536);
   }
 
@@ -370,6 +394,10 @@ uint8_t bankedRead(uint32_t address) {
 
   if (mapper == 0xE7) {
     return readE7(address);
+  }
+  
+  if (mapper == 0xE0) {
+    return readE0(address);
   }
   
   if (mapper == MAPPER_DPC && address >= romSize - 2048) {
@@ -615,6 +643,16 @@ void identifyCartridge() {
     numHotspots = 0;
     romSize = 8192;
   }
+  else if (!strcmp(force, "e0") || (force[0] && detectE0())) {
+    mapper = 0xE0;
+    strcpy(stellaExtension, ".e0");
+    strcat(info + strlen(info), "E0");
+    romSize = 8*1024;
+    hotspots = NULL;
+    numHotspots = 0;
+    strcpy(stellaExtension, ".e7");
+    strcat(info + strlen(info), "E7");
+  }
   else if (!strncmp(force, "e7", 2)) {
     if (!strcmp(force, "e7_16k")) 
       romSize = 16*1024;
@@ -690,7 +728,7 @@ void identifyCartridge() {
     hotspots = NULL;
     numHotspots = 0;
     strcpy(stellaExtension, ".cv");
-    strcat(info, "2K");
+    strcat(info, "CV");
     romSize = 2048;
   }
   else {
