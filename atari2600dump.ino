@@ -209,24 +209,20 @@ inline void dataWrite(uint8_t value) {
 }
 
 // write but don't zero A12 first
-uint8_t rawWrite(uint32_t address, uint8_t value) {
-  setAddress(address);
-  DWTDelayNanoseconds(500);
-  SET_DATA_MODE(GPIO_OUTPUT_PP);
-  dataWrite(value);
-  DWTDelayMicroseconds(3); // probably can be a lot shorter, but let's be super sure it registers
-  SET_DATA_MODE(GPIO_INPUT_FLOATING);
-}
-
-uint8_t write(uint32_t address, uint8_t value) {
+uint8_t write(uint32_t address, uint8_t value, bool longDelay=false) {
   *addressBit12Write = 0;
   DWTDelayMicroseconds(1);  
-  rawWrite(address, value);
+  setAddress(address);
+  SET_DATA_MODE(GPIO_OUTPUT_PP); // should be safe, since with A12=0, the cartridge should have let things float
+  dataWrite(value);
+  DWTDelayMicroseconds(3); // probably can be a lot shorter, but let's be super sure it registers
+  if (longDelay)
+    DWTDelayMicroseconds(3);
+  SET_DATA_MODE(GPIO_INPUT_FLOATING);
 }
-
 void switchBankFE(uint8_t bank) {
-    rawWrite(0x01FE, 0xF0^(bank<<5));
-    rawWrite(0x01FE, 0xF0^(bank<<5));
+    // two writes would be normal, but we just do a long write
+    write(0x01FE, 0xF0^(bank<<5),true);
 }
 
 void switchBank(uint8_t bank) {
@@ -326,21 +322,40 @@ void dataPinState(WiringPinMode state) {
     pinMode(dataPins[i], state);  
 }
 
-bool detectWritePort(uint32_t writeAddress, uint32_t readAddress) {
-  uint8_t x = read(readAddress);
-  write(writeAddress, ~x);
-  return ~x == read(readAddress);
+bool detectSuperChip() {
+  for (unsigned address = 0x1000; address < 0x1080; address++) {
+    uint8_t x = read(address);
+    if (x != 0xFF) {
+      unsigned pin;      
+      for (pin = 0 ; pin < 8 ; pin++)
+        if ((x & (1<<pin)) == 0)
+          break;
+      pinMode(dataPins[pin], INPUT_PULLUP);
+      uint8_t y = read(address);
+      pinMode(dataPins[pin], INPUTX);
+      return x != y;
+    }
+  }
+  // They're all 0xFF. It seems unlikely that a cartridge ROM would begin with a sequence of 
+  // 0xFFs. So it's probably a superchip, with the stm reading all the floating values as high.
+  // But we have no way to be sure, and it's better to just guess wrong---that way, we'll just
+  // include some RAM in the dump, not a biggie.
+  //
+  // Ideally in this case we'd pull down a pin and see if that changes the read. But if we did
+  // that, we'd violate STM's strictures against using internal pulldown/pullup with a 5V input.
+  // 
+  // I can't think of another safe test here, so let's just say it's not a superchip. 
+  return false;
 }
 
 bool detectCartridge(bool finickyMode, uint32_t* valueP=NULL) {
-  uint8_t resetLow = read(0xFFC);
-  uint8_t resetHigh = read(0xFFD);
+  uint8_t resetLow = read(0x1FFC);
+  uint8_t resetHigh = read(0x1FFD);
   if (resetLow == 0xFF && resetHigh == 0xFF) {
     lastNoCartridgeTime = millis();
     return false;
   }
   uint32_t address;
-  uint8_t pin = 0;
   uint8_t oldValue;
   if (resetLow != 0xFF) {
     address = 0x1FFC;
@@ -350,11 +365,10 @@ bool detectCartridge(bool finickyMode, uint32_t* valueP=NULL) {
     address = 0x1FFD;
     oldValue = resetHigh;
   }
-  for (unsigned i = 0 ; i < 8 ; i++)
-    if (oldValue & (1<<i) == 0) {
-      pin = i;
+  uint8_t pin;
+  for (pin = 0 ; pin < 8 ; pin++)
+    if ((oldValue & (1<<pin)) == 0) 
       break;
-    }
   // the bit is 0, so it should be safe to pull it up, unless bitrot changed it to 1 in the meanwhile
   pinMode(dataPins[pin], INPUT_PULLUP);
   uint8_t x = read(address);
@@ -365,6 +379,8 @@ bool detectCartridge(bool finickyMode, uint32_t* valueP=NULL) {
     lastNoCartridgeTime = millis();
     return false;
   }
+  if (valueP != NULL)
+    *valueP = ((uint32_t)resetHigh<<8)|resetLow;
   return true;
 }
 
@@ -395,7 +411,7 @@ bool detectDPC(void) {
 
 void identifyCartridge() {
   const char* msg = NULL;
-  bool checkRAM = false;
+  bool checkSuperChip = false;
   portStart = 0;
   portEnd = 0;
   port2Start = 0;
@@ -421,7 +437,7 @@ void identifyCartridge() {
     strcat(info, "F4");
     strcpy(stellaExtension, ".f4");
     romSize = numHotspots * 4096;
-    checkRAM = true;
+    checkSuperChip = true;
   }
   else if (!strncmp(force, "f6", 2) || (!force[0] && diff(0xF6,hotspots_F6,4,0,1))) {
     mapper = 0xF6;
@@ -430,7 +446,7 @@ void identifyCartridge() {
     strcpy(stellaExtension, ".f6");
     strcat(info, "F6");
     romSize = numHotspots * 4096;
-    checkRAM = true;
+    checkSuperChip = true;
   }
   else if (!strncmp(force, "fa", 2) || (!force[0] && diff(0xFA,hotspots_FA,3,1,2))) {
     mapper = 0xFA;
@@ -449,7 +465,7 @@ void identifyCartridge() {
     strcpy(stellaExtension, ".f8");
     strcat(info, "F8");
     romSize = numHotspots * 4096;
-    checkRAM = true;
+    checkSuperChip = true;
   }
   else if (!strncmp(force, "fe", 2) || (!force[0] && detectFE())) {
     mapper = 0xFE;
@@ -458,7 +474,7 @@ void identifyCartridge() {
     strcpy(stellaExtension, ".fe");
     strcat(info, "FE");
     romSize = 8192;
-    checkRAM = false;
+    checkSuperChip = false;
   }
   else {
     mapper = 0;
@@ -476,8 +492,8 @@ void identifyCartridge() {
     }
   }
   
-  if (checkRAM) {
-    if ((force[0] && force[2]=='s') || (!force[0] && detectWritePort(0x1001, 0x1081))) {
+  if (checkSuperChip) {
+    if ((force[0] && force[2]=='s') || (!force[0] && detectSuperChip())) {
       // Super Chip
       portStart = 0;
       portEnd = 256;
@@ -615,9 +631,7 @@ void waitForCartridge() {
     uint32_t value;
     uint32_t firstValue;
     if (detectCartridge(finicky, &firstValue)) {
-      if (!finicky)
-        return;
-      while (detectCartridge(finicky, &value) && value == firstValue) {
+      while (detectCartridge(finicky, &value) && (!finicky || value == firstValue)) {
         if (millis() - start >= CARTRIDGE_KEEP_TIME_MILLIS)
           return;
         delay(2);
