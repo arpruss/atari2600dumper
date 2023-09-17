@@ -447,13 +447,13 @@ void dataPinState(WiringPinMode state) {
 }
 
 bool detectSuperChip() {
-  *addressBit12Write = 0; 
-  delayMicroseconds(5); // now things should float
-  dataPinState(INPUT_PULLDOWN); // hope this will make some later floaty reads go to zero
-  delayMicroseconds(10);
-  dataPinState(INPUTX);
 
   for (unsigned address = 0x1000; address < 0x1080; address++) {
+    *addressBit12Write = 0; 
+    delayMicroseconds(5); // now things should float
+    dataPinState(INPUT_PULLDOWN); // hope this will make any subsequent floaty read go to zero
+    delayMicroseconds(10);
+    dataPinState(INPUTX);
     uint8_t x = read(address);
     if (x != 0xFF) {
       unsigned pin;      
