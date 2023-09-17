@@ -13,8 +13,8 @@
  *   PA7  PA6  PA5  PA4  PA3  PA2  PA1  PA0  PB4  PB3  PA15
  */
 
-// cartridge types theoretically supported: 2K, 4K, 3F, E7, F4, F6, F8, FA, FE, DPC, plus Super Chip variants
-// tested: F8, DPC
+// cartridge types theoretically supported: 2K, 4K, 3F, CV, E7, F4, F6, F8, FA, FE, DPC, plus Super Chip variants
+// tested only: F8, DPC
 
 #include <ctype.h>
 #include <USBComposite.h>
@@ -28,21 +28,23 @@ USBCompositeSerial CompositeSerial;
 
 #define PRODUCT_ID 0x29
 
-#define PARALLEL
 #define INPUTX INPUT
 
 //#define DEBUG
 
 const char inconsistent[] = "Inconsistent Read!";
+char options[512];
 
 #ifdef DEBUG
-FAT16RootDirEntry rootDir[5+2*FAT16_NUM_ROOT_DIR_ENTRIES_FOR_LFN(LONGEST_FILENAME)+8+1];
+FAT16RootDirEntry rootDir[6+2*FAT16_NUM_ROOT_DIR_ENTRIES_FOR_LFN(LONGEST_FILENAME)+8+1];
 #else
-FAT16RootDirEntry rootDir[5+2*FAT16_NUM_ROOT_DIR_ENTRIES_FOR_LFN(LONGEST_FILENAME)+FAT16_NUM_ROOT_DIR_ENTRIES_FOR_LFN(sizeof(inconsistent)-1)];
+FAT16RootDirEntry rootDir[6+2*FAT16_NUM_ROOT_DIR_ENTRIES_FOR_LFN(LONGEST_FILENAME)+FAT16_NUM_ROOT_DIR_ENTRIES_FOR_LFN(sizeof(inconsistent)-1)];
 #endif
 
 #define NO_HOTPLUG 0
+#define NO_STELLAEXT 0
 bool hotplug = true;
+bool stellaExt = true;
 bool finicky = true;
 uint32_t lastNoCartridgeTime; // last time we had no cartridge at all (not finicky about this)
 char force[4] = "";
@@ -66,7 +68,6 @@ int gameNumber = -1;
 
 const unsigned dataPins[8] = { PB3,PB4,PB10,PB11,PB12,PB13,PB14,PB15 };
 const unsigned addressPins[13] = { PA0,PA1,PA2,PA3,PA4,PA5,PA6,PA7,PA8,PA9,PA10, PA15,PC15 };
-#ifdef PARALLEL
 //const unsigned dataBits[8] = {3,4,10,11,12,13,14,15};
 gpio_reg_map* const mainAddressRegs = GPIOA_BASE;
 const uint32_t mainAddressPortMask = 0b1000011111111111;
@@ -82,7 +83,6 @@ const uint32_t dataPortMask = 0b1111110000011000;
 #define DATA_CRH_MODE(mode) ( ((mode) << (2*4)) | ((mode) << (3*4)) | ((mode) << (4*4)) | ((mode) << (5*4)) | ((mode) << (6*4)) | ((mode) << (7*4)) )
 #define SET_DATA_MODE(mode) ( ( dataRegs->CRL = (dataRegs->CRL & ~dataCRLMask) | DATA_CRL_MODE((mode)) ), \
                               ( dataRegs->CRH = (dataRegs->CRH & ~dataCRHMask) | DATA_CRH_MODE((mode)) ) )
-#endif
 
 uint32_t romSize;
 uint32_t portStart;
@@ -92,6 +92,8 @@ uint32_t port2End;
 char stellaExtension[5];
 const uint32_t* hotspots = NULL;
 #define MAPPER_DPC 0xD0
+#define MAPPER_CV 0xC0
+
 uint8_t mapper;
 const uint32_t hotspots_F6[] = { 0xff6, 0xff7, 0xff8, 0xff9 };
 const uint32_t hotspots_F8[] = { 0xff8, 0xff9 };
@@ -169,6 +171,30 @@ uint32_t crcRange(uint32_t start, uint32_t count) {
   }
 
   return ~result;
+}
+
+void summarizeOptions(void) {
+  strcpy(options,"Persistent:\r\n");
+  if (hotplug) strcat(options, " hotplug\r\n"); else strcat(options, " no hotplug\r\n");
+  if (stellaExt) strcat(options, " file with Stella extension\r\n"); else strcat(options, " no file with Stella extension\r\n");
+  strcat(options,"\r\rNon-persistent:\r\n");
+  if (force[0]) {
+    strcat(options, " force: "); 
+    strcat(options, force);
+    strcat(options, "\r\n");
+  }
+  else {
+    strcat(options, " autodetect\r\n");
+  }
+  strcat(options, "\r\nCommands available:\r\n"
+    " command:reboot\r\n"
+    " command:hotplug\r\n"
+    " command:nohotplug\r\n"
+    " command:force:XXX\r\n"
+    "   XXX = 2k, 4k, 3f, cv, e7, f4, f4s, f6, f6s, f8, f8s, fa, fe, dpc\r\n"
+    " command:noforce\r\n"
+    " command:stellaext\r\n"
+    " command:nostellaext\r\n");
 }
 
 inline void setAddress(uint32_t address) {
@@ -349,6 +375,10 @@ uint8_t bankedRead(uint32_t address) {
   if (mapper == MAPPER_DPC && address >= romSize - 2048) {
     return readDPCGraphics(2047 - (address - (romSize-2048)));
   }
+
+  if (mapper == MAPPER_CV) {
+    return read(address-2048);
+  }
   
   uint32_t address4k = address % 4096;
   if (portStart <= address4k && address4k < portEnd)
@@ -446,9 +476,9 @@ void dataPinState(WiringPinMode state) {
     pinMode(dataPins[i], state);  
 }
 
-bool detectSuperChip() {
-
-  for (unsigned address = 0x1000; address < 0x1080; address++) {
+// checks if there is a write port in address:address+127
+int detectWritePort(unsigned _address) {
+  for (unsigned address = address; address < _address + 0x80; address++) {
     *addressBit12Write = 0; 
     delayMicroseconds(5); // now things should float
     dataPinState(INPUT_PULLDOWN); // hope this will make any subsequent floaty read go to zero
@@ -466,6 +496,14 @@ bool detectSuperChip() {
       return x != y;
     }
   }
+  return -1;
+}
+
+bool detectSuperChip() {
+  int detect = detectWritePort(0x1000);
+  if (detect >= 0)
+    return detect;
+
   // They're all 0xFF. It seems unlikely that a cartridge ROM would begin with a sequence of 
   // 0xFFs. So it's probably a superchip, with the stm reading all the floating values as high.
   // But we have no way to be sure, and it's better to just guess wrong---that way, we'll just
@@ -476,6 +514,13 @@ bool detectSuperChip() {
   // 
   // I can't think of another safe test here, so let's just say it's not a superchip. 
   return false;
+}
+
+bool detectCV() {
+  int detect = detectWritePort(0x1700);
+  if (detect >= 0)
+    return detect;
+  return false;   
 }
 
 bool detectCartridge(bool finickyMode, uint32_t* valueP=NULL) {
@@ -640,6 +685,14 @@ void identifyCartridge() {
     romSize = 8192;
     checkSuperChip = false;
   }
+  else if (!strcmp(force, "cv") || (!force[0] && detectCV())) {
+    mapper = MAPPER_CV;
+    hotspots = NULL;
+    numHotspots = 0;
+    strcpy(stellaExtension, ".cv");
+    strcat(info, "2K");
+    romSize = 2048;
+  }
   else {
     mapper = 0;
     hotspots = NULL;
@@ -742,6 +795,16 @@ bool nullWrite(const uint8_t *writebuff, uint32_t memoryOffset, uint16_t transfe
       force[i] = 0;
       restart = true;
     }
+    else if (!strncmp(p,"stellaext", 9)) {
+      stellaExt = true;
+      EEPROM8_storeValue(NO_STELLAEXT, 0);
+      restart = true;
+    }
+    else if (!strncmp(p,"nostellaext", 9)) {
+      stellaExt = false;
+      EEPROM8_storeValue(NO_STELLAEXT, 1);
+      restart = true;
+    }
   }
   return false;
 }
@@ -771,6 +834,9 @@ bool fileReader(uint8_t *buf, const char* name, uint32_t sector, uint32_t sector
   else if (!strcmp(name,"INFO.TXT")) {
     strcpy((char*)buf, info);
     return true;
+  }
+  else if (!strcmp(name,"OPTIONS.TXT")) {
+    strcpy((char*)buf, options);
   }
   else if (!strcmp(name,"LAUNCH.HTM")) {
     generateHTML(buf, sector, sectorCount);
@@ -811,6 +877,7 @@ void waitForCartridge() {
 void setup() {
   EEPROM8_init();
   hotplug = !EEPROM8_getValue(NO_HOTPLUG);
+  stellaExt = !EEPROM8_getValue(NO_STELLAEXT);
   dataPinState(INPUTX);
   for (unsigned i = 0 ; i < 13 ; i++)
     pinMode(addressPins[i], OUTPUT);
@@ -851,14 +918,18 @@ void setup() {
     finicky = false;
     FAT16AddLFN("INCONSIS.TXT", inconsistent);
     FAT16AddFile("INCONSIS.TXT", 0);
-    strcat(info, "Inconsistent reading dmedetected\r\n");
+    strcat(info, "Inconsistent reading detected\r\n");
   }
+  summarizeOptions();
+  FAT16AddFile("OPTIONS.TXT", strlen(options));
   FAT16AddFile("LAUNCH.HTM", sizeof(launch_htm_0)-1+sizeof(launch_htm_1)-1+BASE64_ENCSIZE(romSize));
   FAT16AddFile("INFO.TXT", strlen(info)); // room for CRC-32 and crlf
   FAT16AddLFN("GAME.A26", filename);
   FAT16AddFile("GAME.A26", romSize);
-  FAT16AddLFN(stellaShortName, stellaFilename);
-  FAT16AddFile(stellaShortName, romSize);
+  if (stellaExt) {
+    FAT16AddLFN(stellaShortName, stellaFilename);
+    FAT16AddFile(stellaShortName, romSize);
+  }
 #ifdef DEBUG
   for (unsigned i = 0 ; i < 8; i++) {
     char buf[5];
