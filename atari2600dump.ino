@@ -460,7 +460,7 @@ bool detectSuperChip() {
       for (pin = 0 ; pin < 8 ; pin++)
         if ((x & (1<<pin)) == 0)
           break;
-      pinMode(dataPins[pin], INPUT_PULLUP);
+      pinMode(dataPins[pin], INPUT_PULLUP); // should be safe to pull up a pin that's zero
       uint8_t y = read(address);
       pinMode(dataPins[pin], INPUTX);
       return x != y;
