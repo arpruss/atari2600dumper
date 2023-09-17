@@ -237,6 +237,7 @@ void switchBank(uint8_t bank) {
     read(hotspots[bank]);
     if (mapper == 0xFA) {
       pinMode(dataPins[0], INPUT_PULLUP); // D0 must be high to switch banks on FA: https://patents.google.com/patent/US4485457A/en
+                  // but I don't know if making the pin high this late after the read is good enough!
       DWTDelayMicroseconds(4);
       pinMode(dataPins[0], INPUT);       
     }    
@@ -320,26 +321,6 @@ bool detectFE() {
   return false;
 }
 
-/*
-bool detectExtraRAM() {
-  // if the first 128 bytes don't change between banks, they're probably RAM
-  // TODO: smarter way to check!
-  if (hotspots == hotspots_FA)
-    return true;
-  if (numHotspots == 0)
-    return false;
-  read(hotspots[0]);
-  for (unsigned i=0; i<128; i++)
-    detectBuffer[i] = read(i);
-  for (unsigned j=1; j<numHotspots; j++) {
-    read(hotspots[j]);
-    for (unsigned i=0; i<128; i++)
-      if (detectBuffer[i] != read(i))
-        return false;
-  }
-}
-*/
-
 void dataPinState(WiringPinMode state) {
   for (unsigned i = 0 ; i < 8 ; i++)
     pinMode(dataPins[i], state);  
@@ -352,22 +333,39 @@ bool detectWritePort(uint32_t writeAddress, uint32_t readAddress) {
 }
 
 bool detectCartridge(bool finickyMode, uint32_t* valueP=NULL) {
-  dataPinState(INPUTX);
-  uint32_t dataDefault = read(0xFFC) | ((uint16_t)read(0xFFD)<<8) | (read(0x200)<<16) | (read(0x307)<<24);
-  dataPinState(INPUT_PULLDOWN); // TODO: is this OK at 5V?
-  uint32_t dataDown = read(0xFFC) | ((uint16_t)read(0xFFD)<<8) | (read(0x200)<<16) | (read(0x307)<<24);
-  dataPinState(INPUTX);
-  if (valueP != NULL)
-    *valueP = dataDefault;
-  bool cartridge = dataDown != 0;
-  if (!cartridge) {
+  uint8_t resetLow = read(0xFFC);
+  uint8_t resetHigh = read(0xFFD);
+  if (resetLow == 0xFF && resetHigh == 0xFF) {
     lastNoCartridgeTime = millis();
     return false;
   }
-  if (finickyMode) 
-    return dataDefault == dataDown;
-  else 
-    return true;
+  uint32_t address;
+  uint8_t pin = 0;
+  uint8_t oldValue;
+  if (resetLow != 0xFF) {
+    address = 0x1FFC;
+    oldValue = resetLow;
+  }
+  else {
+    address = 0x1FFD;
+    oldValue = resetHigh;
+  }
+  for (unsigned i = 0 ; i < 8 ; i++)
+    if (oldValue & (1<<i) == 0) {
+      pin = i;
+      break;
+    }
+  // the bit is 0, so it should be safe to pull it up, unless bitrot changed it to 1 in the meanwhile
+  pinMode(dataPins[pin], INPUT_PULLUP);
+  uint8_t x = read(address);
+  pinMode(dataPins[pin], INPUTX);
+  // if successfully pulled up, no cartridge
+  // if doesn't match old AND finicky, no cartridge
+  if ((x & (1<<pin)) || (finicky && x != oldValue) ) {
+    lastNoCartridgeTime = millis();
+    return false;
+  }
+  return true;
 }
 
 bool check2k(void) {
