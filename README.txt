@@ -2,6 +2,7 @@ In theory, the bankswitching of all classic cartridge types other than F0 and UA
 and they should all detect.
 
 In practice, only F8 and DPC have been tested. Very likely a number will fail to autodetect or dump.
+To improve support, either donate a cartridge or help me with testing.
 
 Once you have a cartridge inserted successfully, you can send some commands to the device.
 Simply write the command to a dummy file on the device (the filename doesn't matter!). E.g., on Windows:
