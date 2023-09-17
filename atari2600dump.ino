@@ -1,6 +1,3 @@
-// TODO: E7, 3F
-
-
 /*
  * You need 21 pins, 8 of them (data) 5V tolerant. The assignments below
  * are for an stm32f103c8t6 blue pill.
@@ -16,7 +13,7 @@
  *   PA7  PA6  PA5  PA4  PA3  PA2  PA1  PA0  PB4  PB3  PA15
  */
 
-// cartridge types theoretically supported: 2K, 4K, F4, F6, F8, FA, FE, DPC, plus Super Chip variants
+// cartridge types theoretically supported: 2K, 4K, 3F, E7, F4, F6, F8, FA, FE, DPC, plus Super Chip variants
 // tested: F8, DPC
 
 #include <ctype.h>
@@ -100,6 +97,9 @@ const uint32_t hotspots_F6[] = { 0xff6, 0xff7, 0xff8, 0xff9 };
 const uint32_t hotspots_F8[] = { 0xff8, 0xff9 };
 const uint32_t hotspots_F4[] = { 0xff4, 0xff5, 0xff6, 0xff7, 0xff8, 0xff9, 0xffa, 0xffb };
 const uint32_t hotspots_FA[] = { 0xff8, 0xff9, 0xffa }; 
+const uint32_t hotspotsE7Start = 0xfe0;
+const uint32_t hotspotsE7End = 0xfeb;
+#define LEN(x) = (sizeof((x))/sizeof(*(x)))
 uint32_t numHotspots = 0;
 int lastBank = -1;
 uint32_t crc;
@@ -189,10 +189,15 @@ inline uint8_t readDataByte() {
   return ((x>>3)&0b11)|( (x>>(10-2)) & 0b11111100);
 }
 
+// always sets bit 12 of address, so caller doesn't have to worry about it
 uint8_t read(uint32_t address) {
   if (mapper == 0xFE) {
     // to prevent an accidental access to 0x01xx, we clear bit 8 early on
     *addressBit8Write = 0;
+  }
+  else if (mapper == 0x3F) {
+    // to prevent an accidental access to 0x003F or below, we set bit 8 early on
+    *addressBit8Write = 1;
   }
   *addressBit12Write = 0;
   DWTDelayMicroseconds(1); // I don't know if this delay is needed
@@ -225,9 +230,16 @@ void switchBankFE(uint8_t bank) {
     write(0x01FE, 0xF0^(bank<<5),true);
 }
 
+void switchBank3F(uint8_t bank) {
+  write(0x003F, bank);
+}
+
 void switchBank(uint8_t bank) {
   if (mapper == 0xFE) {
     switchBankFE(bank);
+  }
+  else if (mapper == 0x3F) {
+    switchBank3F(bank);
   }
   else if (numHotspots > 0) {
     read(hotspots[bank]);
@@ -247,10 +259,97 @@ uint8_t readDPCGraphics(uint16_t address) {
   return read(0x1008);
 }
 
+uint8_t readE7(uint32_t address) {
+  if (address >= (romSize - 2048)) {
+    uint32_t readAddress = address + 4096 - romSize;
+    uint8_t x = read(readAddress);
+    if (hotspotsE7Start <= readAddress && readAddress < hotspotsE7End)
+      lastBank = -1;
+    return x;
+  }
+  unsigned bank = address / 2048;
+  uint8_t x;
+  if (bank != lastBank) {
+    if (romSize == 8*1024) {
+      // 4 bank variation
+        read(0xFE4+bank);
+    }
+    else if (romSize == 12*1024) {
+      // 6 bank variation
+      read(0xFE2+bank);      
+    }
+    else { //if (romSize == 16*1024)
+      // 8 bank variation
+      read(0xFE0+bank);
+    }
+  }
+  lastBank = bank;
+  return read(address % 2048);
+}
+
+uint32_t bankCRC[7];
+
+// check if the data are all different from each other
+bool distinct(const uint32_t* data, unsigned count) {
+  for(unsigned i=1;i<count;i++)
+    for(unsigned j=0;j<i;j++)
+      if (data[i] == data[j])
+        return false;
+  return true;
+}
+
+bool detectE7() {
+  mapper = 0xE7;
+  read(0xfe4);
+  for (unsigned i=512,j=0;i<0x07F0; (i+=19),j++)
+    detectBuffer[j] = read(i);  
+  read(0xfe5);
+  bool detected = false;
+  for (unsigned i=512,j=0;i<0x07F0; (i+=19),j++)
+    if (detectBuffer[j] != read(i)) {
+      detected = true;
+      break;
+    }
+  if (!detected)
+    return false;
+
+  // OK, so it's E7. Now we need to count the banks
+  
+  for (unsigned i=0; i<7; i++) {
+    read(0xFE0+i);
+    bankCRC[i] = unbankedCRC(512,1536);
+  }
+
+  if (distinct(bankCRC,7)) 
+    romSize = 8*2048;
+  else if (distinct(bankCRC+2,5)) 
+    romSize = 6*2048;
+  else 
+    romSize = 4*2048;
+  return true;
+}
+
 uint8_t bankedRead(uint32_t address) {
+  if (mapper == 0x3F) {
+    if (address >= 8192-2048) {
+      // last half of memory is permanently mapped
+      return read(address-4096);
+    }
+    else {
+      int bank = address / 2048;
+      switchBank(bank);
+      return read(address % 2048);
+    }
+  }
+
+  if (mapper == 0xE7) {
+    return readE7(address);
+  }
+  
   if (mapper == MAPPER_DPC && address >= romSize - 2048) {
     return readDPCGraphics(2047 - (address - (romSize-2048)));
   }
+  
   uint32_t address4k = address % 4096;
   if (portStart <= address4k && address4k < portEnd)
     return blankValue;
@@ -275,13 +374,26 @@ uint8_t bankedRead(uint32_t address) {
   return value;
 }
 
-uint32_t romCRC(unsigned start, unsigned count) {
+uint32_t bankedCRC(unsigned start, unsigned count) {
   uint32_t c = 0;
   uint32_t result = ~0;
   unsigned i = start;
 
   for (;  i < count ; i++) {
     result ^= bankedRead(i);
+    result = crc32_for_byte(result);
+  }
+
+  return ~result;
+}
+
+uint32_t unbankedCRC(unsigned start, unsigned count) {
+  uint32_t c = 0;
+  uint32_t result = ~0;
+  unsigned i = start;
+
+  for (;  i < count ; i++) {
+    result ^= read(i);
     result = crc32_for_byte(result);
   }
 
@@ -312,7 +424,19 @@ bool detectFE() {
     detectBuffer[j] = read(i);  
   switchBankFE(1);
   for (unsigned i=512,j=0;i<0x0FF0; (i+=37),j++)
-    if (!(0x800<=i && i<0x880) && detectBuffer[j] != read(i)) // skip DPC port
+    if (detectBuffer[j] != read(i)) 
+      return true;
+  return false;
+}
+
+bool detect3F() {
+  mapper = 0x3F;
+  switchBank3F(0);
+  for (unsigned i=512,j=0;i<0x07F0; (i+=19),j++)
+    detectBuffer[j] = read(i);  
+  switchBank3F(1);
+  for (unsigned i=512,j=0;i<0x07F0; (i+=19),j++)
+    if (detectBuffer[j] != read(i))
       return true;
   return false;
 }
@@ -323,6 +447,12 @@ void dataPinState(WiringPinMode state) {
 }
 
 bool detectSuperChip() {
+  *addressBit12Write = 0; 
+  delayMicroseconds(5); // now things should float
+  dataPinState(INPUT_PULLDOWN); // hope this will make some later floaty reads go to zero
+  delayMicroseconds(10);
+  dataPinState(INPUTX);
+
   for (unsigned address = 0x1000; address < 0x1080; address++) {
     uint8_t x = read(address);
     if (x != 0xFF) {
@@ -396,13 +526,15 @@ uint8_t lfsr(uint8_t LFSR) {
 }
 
 bool detectDPC(void) {
+  mapper = MAPPER_DPC;
   // detect the random number generator 
   *addressBit12Write = 0;
   read(0x70);
   uint8_t x = 0;
   for (int i=0; i<8; i++) {
     *addressBit12Write = 0;
-    if (read(0) != x)
+    uint8_t y = read(0);
+    if (y != x)
       return false;
     x = lfsr(x);
   }
@@ -429,6 +561,38 @@ void identifyCartridge() {
     port2Start = 0x800;
     port2End = 0x880;
     romSize = 8192+2048;
+  }
+  else if (!strcmp(force, "3f") || (!force[0] && detect3F())) {
+    mapper = 0x3F;
+    strcpy(stellaExtension, ".3f"); 
+    strcat(info + strlen(info), "3F");
+    hotspots = NULL;
+    numHotspots = 0;
+    romSize = 8192;
+  }
+  else if (!strncmp(force, "e7", 2)) {
+    if (!strcmp(force, "e7_16k")) 
+      romSize = 16*1024;
+    else if (!strcmp(force, "e7_12k"))
+      romSize = 12*1024;
+    else if (!strcmp(force, "e7_8k"))
+      romSize = 8*1024;
+    else {
+      if (!detectE7())
+        romSize = 16*1024;
+    }
+    mapper = 0xE7;
+    hotspots = NULL;
+    numHotspots = 0;
+    strcpy(stellaExtension, ".e7");
+    strcat(info + strlen(info), "E7");
+  }
+  else if (!force[0] && detectE7()) { // will set romSize if detected
+    mapper = 0xE7;
+    hotspots = NULL;
+    numHotspots = 0;
+    strcpy(stellaExtension, ".e7");
+    strcat(info + strlen(info), "E7");
   }
   else if (!strncmp(force, "f4", 2) || (!force[0] && diff(0xF4,hotspots_F4,8,0,7))) {
     mapper = 0xF4;
@@ -507,7 +671,7 @@ void identifyCartridge() {
   blankValue = 0;
   do 
   {
-    crc = romCRC(0, romSize); 
+    crc = bankedCRC(0, romSize); 
     for (int i = 0 ; i < sizeof database / sizeof *database ; i++) {
       if (romSize == database[i].size && crc == database[i].crc) {
         gameNumber = i;
@@ -676,7 +840,7 @@ void setup() {
     if (hotplug && !detectCartridge(false))
       continue;
     delay(200);
-    newCRC = romCRC(0,romSize);
+    newCRC = bankedCRC(0,romSize);
   } while(hotplug && crc != newCRC && millis() - lastNoCartridgeTime < FALLBACK_TO_NONFINICKY); 
 
   digitalWrite(LED,!LED_ON);
