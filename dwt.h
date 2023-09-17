@@ -65,6 +65,7 @@ static __attribute__((always_inline)) inline void DWTDelayCycles(uint32_t c) {
 }
 
 #define MicrosecondsToCycles(n) ((n) * SystemCoreClock / 1000000ul)
+#define NanosecondsToCycles(n) ((n) * (unsigned long long)SystemCoreClock / 1000000000ull)
 #define DWTDelayMicroseconds(n) DWTDelayCycles(MicrosecondsToCycles(n))
 #define DWTDelayNanoseconds(n) DWTDelayCycles(NanosecondsToCycles(n))
 

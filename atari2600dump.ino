@@ -78,6 +78,13 @@ const uint32_t bit12AddressPortMask = 0b1000000000000000;
 gpio_reg_map* const dataRegs = GPIOB_BASE;
 volatile uint32_t* const addressBit12Write = bb_perip( &(bit12AddressRegs->ODR), 15);
 volatile uint32_t* const addressBit8Write = bb_perip( &(mainAddressRegs->ODR), 8);
+const uint32_t dataCRLMask = 0xFFul << (3*4);
+const uint32_t dataCRHMask = 0xFFFFFFul << 8;
+const uint32_t dataPortMask = 0b1111110000011000;
+#define DATA_CRL_MODE(mode) ( ((mode) << (3*4)) | ((mode) << (4*4)) )
+#define DATA_CRH_MODE(mode) ( ((mode) << (2*4)) | ((mode) << (3*4)) | ((mode) << (4*4)) | ((mode) << (5*4)) | ((mode) << (6*4)) | ((mode) << (7*4)) )
+#define SET_DATA_MODE(mode) ( ( dataRegs->CRL = (dataRegs->CRL & ~dataCRLMask) | DATA_CRL_MODE((mode)) ), \
+                              ( dataRegs->CRH = (dataRegs->CRH & ~dataCRHMask) | DATA_CRH_MODE((mode)) ) )
 #endif
 
 uint32_t romSize;
@@ -195,15 +202,21 @@ uint8_t read(uint32_t address) {
   return readDataByte();
 }
 
+
+inline void dataWrite(uint8_t value) {
+  uint32_t bsrr = ((value & 3) << 3) | ((value & ~3)<<8);
+  dataRegs->BSRR = bsrr | ((~bsrr & dataPortMask) << 16);
+}
+
 // write but don't zero A12 first
 uint8_t rawWrite(uint32_t address, uint8_t value) {
-  for (unsigned i = 0 ; i < 8 ; i++, value>>=1) {
-    pinMode(dataPins[i], (value & 1) ? INPUT_PULLUP : INPUT_PULLDOWN);
-  }
   setAddress(address);
+  DWTDelayMicroseconds(1);
+  SET_DATA_MODE(GPIO_OUTPUT_PP);
+  DWTDelayNanoseconds(500);
+  dataWrite(value);
   DWTDelayMicroseconds(3); // probably can be a lot shorter, but let's be super sure it registers
-
-  dataPinState(INPUTX);
+  SET_DATA_MODE(GPIO_INPUT_FLOATING);
 }
 
 uint8_t write(uint32_t address, uint8_t value) {
@@ -222,6 +235,7 @@ void switchBank(uint8_t bank) {
     switchBankFE(bank);
   }
   else if (mapper == 0xFA) {
+    // TODO: internal pullups aren't 5V tolerant; I don't know what to do!
     pinMode(dataPins[0], INPUT_PULLUP); // D0 must be high to switch banks on FA: https://patents.google.com/patent/US4485457A/en
     read(hotspots[bank]);
     pinMode(dataPins[0], INPUT);       
@@ -333,36 +347,29 @@ void dataPinState(WiringPinMode state) {
     pinMode(dataPins[i], state);  
 }
 
-bool detectWritePort(uint32_t address) { 
-  uint8_t x;
-  dataPinState(INPUT_PULLUP);
-  x = read(address);
-  dataPinState(INPUTX);
-  if (x != 0xFF)
-    return false;
-  dataPinState(INPUT_PULLDOWN);
-  x = read(address);
-  dataPinState(INPUTX);
-  return x == 0;
+bool detectWritePort(uint32_t writeAddress, uint32_t readAddress) {
+  uint8_t x = read(readAddress);
+  write(writeAddress, ~x);
+  return ~x == read(readAddress);
 }
 
 bool detectCartridge(bool finickyMode, uint32_t* valueP=NULL) {
-  dataPinState(INPUT_PULLUP);
-  uint32_t dataUp = read(0xFFC) | ((uint16_t)read(0xFFD)<<8) | (read(0x200)<<16) | (read(0x307)<<24);
-  dataPinState(INPUT_PULLDOWN);
-  uint32_t dataDown = read(0xFFC) | ((uint16_t)read(0xFFD)<<8) | (read(0x200)<<16) | (read(0x307)<<24);
-  if (valueP != NULL)
-    *valueP = dataUp;
   dataPinState(INPUTX);
-  bool cartridge = dataUp != 0xFFFFFFFF || dataDown != 0;
-  if (!cartridge)
+  uint32_t dataDefault = read(0xFFC) | ((uint16_t)read(0xFFD)<<8) | (read(0x200)<<16) | (read(0x307)<<24);
+  dataPinState(INPUT_PULLDOWN); // TODO: is this OK at 5V?
+  uint32_t dataDown = read(0xFFC) | ((uint16_t)read(0xFFD)<<8) | (read(0x200)<<16) | (read(0x307)<<24);
+  dataPinState(INPUTX);
+  if (valueP != NULL)
+    *valueP = dataDefault;
+  bool cartridge = dataDown != 0;
+  if (!cartridge) {
     lastNoCartridgeTime = millis();
-  if (finickyMode) {
-    return dataUp == dataDown;
+    return false;
   }
-  else {
-    return cartridge;
-  }
+  if (finickyMode) 
+    return dataDefault == dataDown;
+  else 
+    return true;
 }
 
 bool check2k(void) {
@@ -436,7 +443,8 @@ void identifyCartridge() {
     strcpy(stellaExtension, ".fa");
     strcat(info, "FA");
     romSize = numHotspots * 4096; 
-    checkRAM = true;
+    portStart = 0;
+    portEnd = 512;
   } 
   else if (!strncmp(force,"f8", 2) || (!force[0] && diff(0xF8,hotspots_F8,2,0,1))) {
     mapper = 0xF8;
@@ -473,18 +481,12 @@ void identifyCartridge() {
   }
   
   if (checkRAM) {
-    if (!strcmp(force, "fa") || (force[0] && force[2]=='s') || (!force[0] && detectWritePort(0))) {
-      if (mapper == 0xFA) {
-        portStart = 0;
-        portEnd = 512;
-      }
-      else {
-        // Super Chip
-        portStart = 0;
-        portEnd = 256;
-        strcat(info, "SC");
-        strcat(stellaExtension, "s");
-      }
+    if ((force[0] && force[2]=='s') || (!force[0] && detectWritePort(0x1001, 0x1081))) {
+      // Super Chip
+      portStart = 0;
+      portEnd = 256;
+      strcat(info, "SC");
+      strcat(stellaExtension, "s");
     }
   }
   
@@ -675,7 +677,7 @@ void setup() {
     finicky = false;
     FAT16AddLFN("INCONSIS.TXT", inconsistent);
     FAT16AddFile("INCONSIS.TXT", 0);
-    strcat(info, "Inconsistent reading detected\r\n");
+    strcat(info, "Inconsistent reading dmedetected\r\n");
   }
   FAT16AddFile("LAUNCH.HTM", sizeof(launch_htm_0)-1+sizeof(launch_htm_1)-1+BASE64_ENCSIZE(romSize));
   FAT16AddFile("INFO.TXT", strlen(info)); // room for CRC-32 and crlf
