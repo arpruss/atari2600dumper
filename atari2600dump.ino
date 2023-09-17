@@ -211,16 +211,15 @@ inline void dataWrite(uint8_t value) {
 // write but don't zero A12 first
 uint8_t rawWrite(uint32_t address, uint8_t value) {
   setAddress(address);
-  DWTDelayMicroseconds(1);
-  SET_DATA_MODE(GPIO_OUTPUT_PP);
   DWTDelayNanoseconds(500);
+  SET_DATA_MODE(GPIO_OUTPUT_PP);
   dataWrite(value);
   DWTDelayMicroseconds(3); // probably can be a lot shorter, but let's be super sure it registers
   SET_DATA_MODE(GPIO_INPUT_FLOATING);
 }
 
 uint8_t write(uint32_t address, uint8_t value) {
-  digitalWrite(addressPins[12], 0);  
+  *addressBit12Write = 0;
   DWTDelayMicroseconds(1);  
   rawWrite(address, value);
 }
@@ -234,14 +233,13 @@ void switchBank(uint8_t bank) {
   if (mapper == 0xFE) {
     switchBankFE(bank);
   }
-  else if (mapper == 0xFA) {
-    // TODO: internal pullups aren't 5V tolerant; I don't know what to do!
-    pinMode(dataPins[0], INPUT_PULLUP); // D0 must be high to switch banks on FA: https://patents.google.com/patent/US4485457A/en
-    read(hotspots[bank]);
-    pinMode(dataPins[0], INPUT);       
-  }
   else if (numHotspots > 0) {
     read(hotspots[bank]);
+    if (mapper == 0xFA) {
+      pinMode(dataPins[0], INPUT_PULLUP); // D0 must be high to switch banks on FA: https://patents.google.com/patent/US4485457A/en
+      DWTDelayMicroseconds(4);
+      pinMode(dataPins[0], INPUT);       
+    }    
   }
 }
 
