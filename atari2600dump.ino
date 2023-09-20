@@ -246,7 +246,7 @@ inline void setAddress(uint32_t address) {
     uint32_t bit12AddressPortValue = (address & 0x1000) << (15-12);
     register uint32_t bsrr12 = (bit12AddressPortValue) | ( ((~bit12AddressPortValue) & bit12AddressPortMask) << 16);
 
-    // *nearly* atomic address write; the order does matter in practice
+    // *nearly* atomic address write; alas the order does matter in practice
     mainAddressRegs->BSRR = bsrr;
     bit12AddressRegs->BSRR = bsrr12;
 }
@@ -257,26 +257,19 @@ inline uint8_t readDataByte() {
   return ((x>>3)&0b11)|( (x>>(10-2)) & 0b11111100);
 }
 
-// always sets bit 12 of address, so caller doesn't have to worry about it
-uint8_t read(uint32_t address) {
-  *addressBit12Write = 0;
-  DWTDelayMicroseconds(1); // I don't know if this delay is needed
-  setAddress(address|0x1000);
+// raw read
+inline __attribute__((always_inline)) uint8_t rawRead(uint32_t address) {
+  setAddress(address);
   DWTDelayMicroseconds(1); 
   
   return readDataByte();
 }
 
-// leave bit 12 of address as is
-uint8_t read0UA(uint32_t address) {
-  // to prevent an accidental access to 0x0220 or 0x0240, we clear bit 9 early on
-  *addressBit9Write = 0;
+// always sets bit 12 of address, so caller doesn't have to worry about it
+uint8_t read(uint32_t address) {
   *addressBit12Write = 0;
   DWTDelayMicroseconds(1); // I don't know if this delay is needed
-  setAddress(address);
-  DWTDelayMicroseconds(1); 
-  
-  return readDataByte();
+  return rawRead(address);
 }
 
 uint8_t readFE(uint32_t address) {
@@ -322,9 +315,9 @@ void switchBankFE(uint32_t bank) {
 
 void switchBankUA(uint32_t bank) {
     if (bank == 0)
-      read0UA(0x220);
+      rawRead(0x220);
     else
-      read0UA(0x240);
+      rawRead(0x240);
 }
 
 void switchBank3F(uint32_t bank) {
