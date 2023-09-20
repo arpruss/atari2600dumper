@@ -1,7 +1,7 @@
 In theory, the bankswitching of all classic cartridge types other than F0 and UA is supported,
 and they should all detect.
 
-In practice, only F8 and DPC have been tested. Very likely a number will fail to autodetect or dump.
+In practice, only F8 and DPC have been tested. Very likely a number of other types will fail to autodetect or dump.
 To improve support, either donate a cartridge or help me with testing.
 
 Once you have a cartridge inserted successfully, you can send some commands to the device.
@@ -19,7 +19,8 @@ Here are the commands currently supported:
         Cartridge must be inserted into device prior to inserting into USB port, and can't be changed. But this has hope of
         reading unreliable cartridges. This setting will be saved to flash and will survive unplugging the device.
     command:force:ext
-        Force the cartridge type to ext, where ext is one of the Stella extensions: 2k, 4k, f4, f4s, f6, f6s, f8, f8s, fa, fe and dpc.
+        Force the cartridge type to ext, where ext is one of the types: 
+            2k, 4k, 3f, cv, e0, e7_8k, e7_12k, e7_16k, f4, f4s, f6, f6s, f8, f8s, fa, fe, ua, dpc
         Will reset the connection.
     command:noforce
         Go back to autodetection mode.
