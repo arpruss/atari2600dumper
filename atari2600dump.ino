@@ -31,16 +31,10 @@ USBCompositeSerial CompositeSerial;
 
 #define INPUTX INPUT
 
-//#define DEBUG
-
 const char inconsistent[] = "Inconsistent Read!";
 char options[512];
 
-#ifdef DEBUG
-FAT16RootDirEntry rootDir[6+2*FAT16_NUM_ROOT_DIR_ENTRIES_FOR_LFN(LONGEST_FILENAME)+8+1];
-#else
 FAT16RootDirEntry rootDir[6+2*FAT16_NUM_ROOT_DIR_ENTRIES_FOR_LFN(LONGEST_FILENAME)+FAT16_NUM_ROOT_DIR_ENTRIES_FOR_LFN(sizeof(inconsistent)-1)];
-#endif
 
 #define NO_HOTPLUG 0
 #define NO_STELLAEXT 0
@@ -48,7 +42,7 @@ bool hotplug = true;
 bool stellaExt = true;
 bool finicky = true;
 uint32_t lastNoCartridgeTime; // last time we had no cartridge at all (not finicky about this)
-char force[4] = "";
+uint16_t force = 0;
 bool restart = false;
 char filename[255];
 char stellaFilename[255];
@@ -85,28 +79,76 @@ const uint32_t dataPortMask = 0b1111110000011000;
 #define SET_DATA_MODE(mode) ( ( dataRegs->CRL = (dataRegs->CRL & ~dataCRLMask) | DATA_CRL_MODE((mode)) ), \
                               ( dataRegs->CRH = (dataRegs->CRH & ~dataCRHMask) | DATA_CRH_MODE((mode)) ) )
 
-uint32_t romSize;
-uint32_t portStart;
-uint32_t portEnd;
-uint32_t port2Start;
-uint32_t port2End;
-char stellaExtension[5];
-const uint32_t* hotspots = NULL;
+#define SUPERCHIP 0x8000
+#define MAPPER(type,size) ((type)|((uint16_t)(size)<<8))
 #define MAPPER_DPC 0xD0
 #define MAPPER_CV 0xC0
+#define MAPPER_4K MAPPER(0,4)
+#define MAPPER_2K MAPPER(0,2)
 
-uint8_t mapper;
-const uint32_t hotspots_F6[] = { 0xff6, 0xff7, 0xff8, 0xff9 };
-const uint32_t hotspots_F8[] = { 0xff8, 0xff9 };
-const uint32_t hotspots_F4[] = { 0xff4, 0xff5, 0xff6, 0xff7, 0xff8, 0xff9, 0xffa, 0xffb };
-const uint32_t hotspots_FA[] = { 0xff8, 0xff9, 0xffa }; 
-const uint32_t hotspotsE7Start = 0xfe0;
-const uint32_t hotspotsE7End = 0xfeb;
-const uint32_t hotspotsE0Start = 0xfe0;
-const uint32_t hotspotsE0End = 0xfe7;
-const uint32_t hotspotsE01800Start = 0x1ff0;
-#define LEN(x) = (sizeof((x))/sizeof(*(x)))
-uint32_t numHotspots = 0;
+typedef struct {
+  uint16_t id;
+  char extension[4];
+  const char* description;
+  uint32_t romSize;
+  uint32_t hotspotsStart;
+  uint32_t hotspotsEnd;
+  uint32_t portMask;
+  uint32_t portStart;
+  uint32_t portEnd;
+  void (*switchBank)(uint32_t bank);
+  uint8_t (*bankedRead)(uint32_t address);
+  uint16_t (*detect)(void);
+} CartType;
+
+void switchBankGeneric(uint32_t bank);
+void switchBank3F(uint32_t bank);
+void switchBankFA(uint32_t bank);
+void switchBankFE(uint32_t bank);
+uint8_t read(uint32_t address);
+uint8_t bankedReadDPC(uint32_t address);
+uint8_t bankedRead3F(uint32_t address);
+uint8_t bankedReadE0(uint32_t address);
+uint8_t bankedReadE7(uint32_t address);
+uint8_t bankedReadGeneric(uint32_t address);
+uint8_t bankedReadCV(uint32_t address);
+uint16_t detectDPC();
+uint16_t detect3F();
+uint16_t detectE0();
+uint16_t detectE7();
+uint16_t detectF4();
+uint16_t detectF6();
+uint16_t detectF8();
+uint16_t detectFA();
+uint16_t detectFE();
+uint16_t detectCV();
+uint16_t detect2K();
+
+// detectors are called in this order
+// a detector can also return the ID of a later carttype
+const CartType cartTypes[] = {
+  { MAPPER_DPC, "dpc", "DPC", 10240, 0xff8, 0xffa, 0x7FF, 0, 0x80, switchBankGeneric, bankedReadDPC, detectDPC },
+  { 0x3F, "3f", "3F", 8192, 0, 0, 0, 0, 0, switchBank3F, bankedRead3F, detect3F },
+  { 0xE0, "e0", "E0", 8192, 0xff0, 0xff8, 0, 0, 0, NULL, bankedReadE0, detectE0 },
+  { MAPPER(0xE7, 16), "e7", "E7 16K", 16*1024, 0xfe0, 0xfec, 0, 0, 0, NULL, bankedReadE7, detectE7 },
+  { MAPPER(0xE7, 12), "e7", "E7 12K", 12*1024, 0xfe0, 0xfec, 0, 0, 0, NULL, bankedReadE7, NULL },
+  { MAPPER(0xE7, 8), "e7", "E7 8K", 8*1024, 0xfe0, 0xfec, 0, 0, 0, NULL, bankedReadE7, NULL },
+  { 0xF4, "f4", "F4", 32*1024, 0xff4, 0xffc, 0, 0, 0, switchBankGeneric, bankedReadGeneric, detectF4 },
+  { 0xF4|SUPERCHIP, "f4s", "F4SC", 32*1024, 0xff4, 0xffc, 0xFFF, 0, 0x100, switchBankGeneric, bankedReadGeneric, NULL },
+  { 0xF6, "f6", "F6", 16*1024, 0xff6, 0xffa, 0, 0, 0, switchBankGeneric, bankedReadGeneric, detectF6 },
+  { 0xF6|SUPERCHIP, "f6s", "F6SC", 16*1024, 0xff6, 0xffa, 0xFFF, 0, 0x100, switchBankGeneric, bankedReadGeneric, NULL },
+  { 0xF8, "f8", "F8", 8*1024, 0xff8, 0xffa, 0, 0, 0, switchBankGeneric, bankedReadGeneric, detectF8 },
+  { 0xF8|SUPERCHIP, "f8s", "F8SC", 8*1024, 0xff8, 0xffa, 0xFFF, 0, 0x100, switchBankGeneric, bankedReadGeneric, NULL },
+  { 0xFA, "fa", "FA", 12*1024, 0xff8, 0xffb, 0xFFF, 0, 0x200, switchBankFA, bankedReadGeneric, detectFA },
+  { 0xFE, "fe", "FE", 8*1024, 0, 0, 0, 0, 0, switchBankFE, bankedReadGeneric, detectFE },
+  { MAPPER_CV, "cv", "CV", 2048, 0, 0, 0, 0, 0, NULL, bankedReadCV, detectCV },
+  { MAPPER_2K, "2k", "2K", 2048, 0, 0, 0, 0, 0, NULL, read, detect2K },
+  { MAPPER_4K, "4k", "4K", 4096, 0, 0, 0, 0, 0, NULL, read, NULL },
+};
+
+const CartType* currentType;
+
+#define LEN(x) (sizeof((x))/sizeof(*(x)))
 int lastBank = -1;
 uint32_t crc;
 uint8_t detectBuffer[128];
@@ -182,9 +224,9 @@ void summarizeOptions(void) {
   if (hotplug) strcat(options, " hotplug\r\n"); else strcat(options, " no hotplug\r\n");
   if (stellaExt) strcat(options, " file with Stella extension\r\n"); else strcat(options, " no file with Stella extension\r\n");
   strcat(options,"\r\rNon-persistent:\r\n");
-  if (force[0]) {
-    strcat(options, " force: "); 
-    strcat(options, force);
+  if (force) {
+    strcat(options, " force: ");
+    strcat(options, findCartType(force)->description);
     strcat(options, "\r\n");
   }
   else {
@@ -195,7 +237,7 @@ void summarizeOptions(void) {
     " command:hotplug\r\n"
     " command:nohotplug\r\n"
     " command:force:XXX\r\n"
-    "   XXX = 2k, 4k, 3f, cv, e0, e7, f4, f4s, f6, f6s, f8, f8s, fa, fe, dpc\r\n"
+    "   XXX = 2k, 4k, 3f, cv, e0, e7_8k, e7_12k, e7_16k, f4, f4s, f6, f6s, f8, f8s, fa, fe, dpc\r\n"
     " command:noforce\r\n"
     " command:stellaext\r\n"
     " command:nostellaext\r\n");
@@ -221,11 +263,11 @@ inline uint8_t readDataByte() {
 
 // always sets bit 12 of address, so caller doesn't have to worry about it
 uint8_t read(uint32_t address) {
-  if (mapper == 0xFE) {
+  if (currentType->id == 0xFE) {
     // to prevent an accidental access to 0x01xx, we clear bit 8 early on
     *addressBit8Write = 0;
   }
-  else if (mapper == 0x3F) {
+  else if (currentType->id == 0x3F) {
     // to prevent an accidental access to 0x003F or below, we set bit 8 early on
     *addressBit8Write = 1;
   }
@@ -255,31 +297,26 @@ uint8_t write(uint32_t address, uint8_t value, bool longDelay=false) {
     DWTDelayMicroseconds(3);
   SET_DATA_MODE(GPIO_INPUT_FLOATING);
 }
-void switchBankFE(uint8_t bank) {
+
+void switchBankFE(uint32_t bank) {
     // two writes would be normal, but we just do a long write
     write(0x01FE, 0xF0^(bank<<5),true);
 }
 
-void switchBank3F(uint8_t bank) {
+void switchBank3F(uint32_t bank) {
   write(0x003F, bank);
 }
 
-void switchBank(uint8_t bank) {
-  if (mapper == 0xFE) {
-    switchBankFE(bank);
-  }
-  else if (mapper == 0x3F) {
-    switchBank3F(bank);
-  }
-  else if (numHotspots > 0) {
-    read(hotspots[bank]);
-    if (mapper == 0xFA) {
-      pinMode(dataPins[0], INPUT_PULLUP); // D0 must be high to switch banks on FA: https://patents.google.com/patent/US4485457A/en
-                  // but I don't know if making the pin high this late after the read is good enough!
-      DWTDelayMicroseconds(4);
-      pinMode(dataPins[0], INPUT);       
-    }    
-  }
+void switchBankFA(uint32_t bank) {
+  read(currentType->hotspotsStart+bank);
+  pinMode(dataPins[0], INPUT_PULLUP); // D0 must be high to switch banks on FA: https://patents.google.com/patent/US4485457A/en
+              // but I don't know if making the pin high this late after the read is good enough!
+  DWTDelayMicroseconds(4);
+  pinMode(dataPins[0], INPUT);       
+}
+
+void switchBankGeneric(uint32_t bank) {
+    read(currentType->hotspotsStart+bank);  
 }
 
 // in theory, we could do sequential reads and it would be faster, but why bother?
@@ -289,31 +326,31 @@ uint8_t readDPCGraphics(uint16_t address) {
   return read(0x1008);
 }
 
-uint8_t readE0(uint32_t address) {
+uint8_t bankedReadE0(uint32_t address) {
   uint8_t bank = address / 1024;
   if (bank != lastBank) {
-    read(hotspotsE01800Start+bank);
+    read(currentType->hotspotsStart+bank);
     lastBank = bank;
   }
   return read(0x1800 + (address % 1024));
 }
 
-uint8_t readE7(uint32_t address) {
-  if (address >= (romSize - 2048)) {
-    uint32_t readAddress = address + 4096 - romSize;
+uint8_t bankedReadE7(uint32_t address) {
+  if (address >= (currentType->romSize - 2048)) {
+    uint32_t readAddress = address + 4096 - currentType->romSize;
     uint8_t x = read(readAddress);
-    if (hotspotsE7Start <= readAddress && readAddress < hotspotsE7End)
+    if (currentType->hotspotsStart <= readAddress && readAddress < currentType->hotspotsEnd)
       lastBank = -1;
     return x;
   }
   unsigned bank = address / 2048;
   uint8_t x;
   if (bank != lastBank) {
-    if (romSize == 8*1024) {
+    if (currentType->romSize == 8*1024) {
       // 4 bank variation
         read(0xFE4+bank);
     }
-    else if (romSize == 12*1024) {
+    else if (currentType->romSize == 12*1024) {
       // 6 bank variation
       read(0xFE2+bank);      
     }
@@ -337,19 +374,18 @@ bool distinct(const uint32_t* data, unsigned count) {
   return true;
 }
 
-bool detectE0() {
-  read(hotspotsE01800Start);
+uint16_t detectE0() {
+  read(currentType->hotspotsStart);
   for (unsigned i=512,j=0;i<1024; (i+=7),j++)
     detectBuffer[j] = read(0x800+i);  
-  read(hotspotsE01800Start+1);
+  read(currentType->hotspotsStart+1);
   for (unsigned i=512,j=0;i<1024; (i+=7),j++)
     if (detectBuffer[j] != read(0x800+i))
-      return false;
-  return true;  
+      return 0xE0;
+  return 0;  
 }
 
-bool detectE7() {
-  mapper = 0xE7;
+uint16_t detectE7() {
   read(0xfe4);
   for (unsigned i=512,j=0;i<0x07F0; (i+=19),j++)
     detectBuffer[j] = read(i);  
@@ -361,75 +397,67 @@ bool detectE7() {
       break;
     }
   if (!detected)
-    return false;
+    return 0;
 
   // OK, so it's E7. Now we need to count the banks
   
   for (unsigned i=0; i<7; i++) {
-    read(hotspotsE7Start+i);
+    read(currentType->hotspotsStart+i);
     bankCRC[i] = unbankedCRC(512,1536);
   }
 
-  if (distinct(bankCRC,7)) 
-    romSize = 8*2048;
-  else if (distinct(bankCRC+2,5)) 
-    romSize = 6*2048;
-  else 
-    romSize = 4*2048;
-  return true;
+  if (distinct(bankCRC,7)) {
+    return MAPPER(0xE7,16);
+  }
+  else if (distinct(bankCRC+2,5)) {
+    return MAPPER(0xE7,12);
+  }
+  else {
+    return MAPPER(0xE7,8);
+  }
 }
 
-uint8_t bankedRead(uint32_t address) {
-  if (mapper == 0x3F) {
-    if (address >= 8192-2048) {
-      // last half of memory is permanently mapped
-      return read(address-4096);
-    }
-    else {
-      int bank = address / 2048;
-      switchBank(bank);
-      return read(address % 2048);
-    }
+uint8_t bankedReadDPC(uint32_t address) {
+  if (address >= currentType->romSize - 2048) {
+    return readDPCGraphics(2047 - (address - (currentType->romSize-2048)));
   }
+  return bankedReadGeneric(address);
+}
 
-  if (mapper == 0xE7) {
-    return readE7(address);
-  }
-  
-  if (mapper == 0xE0) {
-    return readE0(address);
-  }
-  
-  if (mapper == MAPPER_DPC && address >= romSize - 2048) {
-    return readDPCGraphics(2047 - (address - (romSize-2048)));
-  }
-
-  if (mapper == MAPPER_CV) {
-    return read(address-2048);
-  }
-  
-  uint32_t address4k = address % 4096;
-  if (portStart <= address4k && address4k < portEnd)
+uint8_t bankedReadGeneric(uint32_t address) {
+  uint32_t maskedAddress = (address & currentType->portMask);
+  if (currentType->portStart <= maskedAddress && maskedAddress < currentType->portEnd)
     return blankValue;
-  if (port2Start <= address4k && address4k < port2End)
-    return blankValue;
-  if (romSize <= 4096)
+  if (currentType->romSize <= 4096)
     return read(address);
-  int bank = address / 4096;
+  uint32_t bank = address / 4096;
   if (bank != lastBank) {
-    switchBank(bank);
+    currentType->switchBank(bank);
     lastBank = bank;
   }
+  uint32_t address4k = address % 4096;
   uint8_t value = read(address4k);
   // check if what we read is one of the hotspots, so that
   // we might have unintentionally swapped banks
-  for (int i=0; i<numHotspots; i++) {
-    if (hotspots[i] == address4k) {
-     lastBank = i;
-     break;
-    }
-  }
+  if (currentType->hotspotsStart <= address4k && address4k < currentType->hotspotsEnd)
+    lastBank = address4k - currentType->hotspotsStart;
   return value;
+}
+
+uint8_t bankedRead3F(uint32_t address) {
+  if (address >= 8192-2048) {
+      // last half of memory is permanently mapped
+      return read(address-4096);
+  }
+  else {
+      uint32_t bank = address / 2048;
+      switchBank3F(bank);
+      return read(address % 2048);
+  }
+}
+
+uint8_t bankedReadCV(uint32_t address) {
+  return read(address-2048);
 }
 
 uint32_t bankedCRC(unsigned start, unsigned count) {
@@ -438,7 +466,7 @@ uint32_t bankedCRC(unsigned start, unsigned count) {
   unsigned i = start;
 
   for (;  i < count ; i++) {
-    result ^= bankedRead(i);
+    result ^= currentType->bankedRead(i);
     result = crc32_for_byte(result);
   }
 
@@ -458,45 +486,17 @@ uint32_t unbankedCRC(unsigned start, unsigned count) {
   return ~result;
 }
 
-bool diff(uint8_t _mapper, const uint32_t* _hotspots, unsigned _numHotspots, uint8_t b1, uint8_t b2) {
-  mapper = _mapper;
-  hotspots = _hotspots;
-  numHotspots = _numHotspots;
-  // sample memory space every 37 bytes, skipping a potential RAM space at the beginning; this is nearly certain to pick up a difference 
-  // between banks if there is a difference
-  // detectBuffer is large enough for this sampling
-  switchBank(b1);
-  for (unsigned i=512,j=0;i<0x0FF0; (i+=37),j++)
-    detectBuffer[j] = read(i);
-  switchBank(b2);
-  for (unsigned i=512,j=0;i<0x0FF0; (i+=37),j++)
-    if (!(0x800<=i && i<0x880) && detectBuffer[j] != read(i)) // skip DPC port
-      return true;
-  return false;
+const CartType* findCartType(uint16_t id) {
+  for (uint32_t i = 0 ; i < LEN(cartTypes) ; i++) {
+    if (cartTypes[i].id == id) {
+      return cartTypes + i;
+    }
+  }
+  return cartTypes + LEN(cartTypes) - 1;
 }
 
-bool detectFE() {
-  mapper = 0xFE;
-  switchBankFE(0);
-  for (unsigned i=512,j=0;i<0x0FF0; (i+=37),j++)
-    detectBuffer[j] = read(i);  
-  switchBankFE(1);
-  for (unsigned i=512,j=0;i<0x0FF0; (i+=37),j++)
-    if (detectBuffer[j] != read(i)) 
-      return true;
-  return false;
-}
-
-bool detect3F() {
-  mapper = 0x3F;
-  switchBank3F(0);
-  for (unsigned i=512,j=0;i<0x07F0; (i+=19),j++)
-    detectBuffer[j] = read(i);  
-  switchBank3F(1);
-  for (unsigned i=512,j=0;i<0x07F0; (i+=19),j++)
-    if (detectBuffer[j] != read(i))
-      return true;
-  return false;
+void setCartType(uint16_t id) {
+  currentType = findCartType(id);
 }
 
 void dataPinState(WiringPinMode state) {
@@ -544,13 +544,6 @@ bool detectSuperChip() {
   return false;
 }
 
-bool detectCV() {
-  int detect = detectWritePort(0x1700);
-  if (detect >= 0)
-    return detect;
-  return false;   
-}
-
 bool detectCartridge(bool finickyMode, uint32_t* valueP=NULL) {
   uint8_t resetLow = read(0x1FFC);
   uint8_t resetHigh = read(0x1FFD);
@@ -587,19 +580,25 @@ bool detectCartridge(bool finickyMode, uint32_t* valueP=NULL) {
   return true;
 }
 
-bool check2k(void) {
+uint16_t detectCV() {
+  int detect = detectWritePort(0x1700);
+  if (detect > 0)
+    return MAPPER_CV;
+  return 0;
+}
+
+uint16_t detect2K(void) {
   for (unsigned i = 0 ; i < 2048 ; i++)
     if (read(i) != read(i+2048))
-      return false;
-  return true;
+      return MAPPER_2K;
+  return MAPPER_4K;
 }
 
 uint8_t lfsr(uint8_t LFSR) {
   return ((LFSR << 1) | (~(((LFSR >> 7) ^ (LFSR >> 5)) ^ ((LFSR >> 4) ^ (LFSR >> 3))) & 1)) & 0xff;
 }
 
-bool detectDPC(void) {
-  mapper = MAPPER_DPC;
+uint16_t detectDPC(void) {
   // detect the random number generator 
   *addressBit12Write = 0;
   read(0x70);
@@ -608,175 +607,125 @@ bool detectDPC(void) {
     *addressBit12Write = 0;
     uint8_t y = read(0);
     if (y != x)
-      return false;
+      return 0;
     x = lfsr(x);
   }
-  return true;
+  return MAPPER_DPC;
 }
+
+bool diff(uint32_t b1, uint32_t b2) {
+  // sample memory space every 37 bytes, skipping a potential RAM space at the beginning; this is nearly certain to pick up a difference 
+  // between banks if there is a difference
+  // detectBuffer is large enough for this sampling
+  currentType->switchBank(b1);
+  for (unsigned i=512,j=0;i<0x0FF0; (i+=37),j++)
+    detectBuffer[j] = read(i);
+  currentType->switchBank(b2);
+  for (unsigned i=512,j=0;i<0x0FF0; (i+=37),j++)
+    if (!(0x800<=i && i<0x880) && detectBuffer[j] != read(i)) // skip DPC port
+      return true;
+  return false;
+}
+
+uint16_t detect3F() {
+  switchBank3F(0);
+  for (unsigned i=512,j=0;i<0x07F0; (i+=19),j++)
+    detectBuffer[j] = read(i);  
+  switchBank3F(1);
+  for (unsigned i=512,j=0;i<0x07F0; (i+=19),j++)
+    if (detectBuffer[j] != read(i))
+      return 0x3F;
+  return 0;
+}
+
+uint16_t detectFE() {
+  switchBankFE(0);
+  for (unsigned i=512,j=0;i<0x0FF0; (i+=37),j++)
+    detectBuffer[j] = read(i);  
+  switchBankFE(1);
+  for (unsigned i=512,j=0;i<0x0FF0; (i+=37),j++)
+    if (detectBuffer[j] != read(i)) 
+      return 0xFE;
+  return 0;
+}
+
+uint16_t detectF4() {
+  if (! diff(0,7))
+    return 0;
+  if (detectSuperChip())
+    return SUPERCHIP | 0xF4;
+  else
+    return 0xF4;
+}
+
+uint16_t detectF6() {
+  if (! diff(0,1))
+    return 0;
+  if (detectSuperChip())
+    return SUPERCHIP | 0xF6;
+  else
+    return 0xF6;
+}
+
+uint16_t detectF8() {
+  if (! diff(0,1))
+    return 0;
+  if (detectSuperChip())
+    return SUPERCHIP | 0xF8;
+  else
+    return 0xF8;
+}
+
+uint16_t detectFA() {
+  if (! diff(1,2))
+    return 0;
+  return 0xFA;
+}
+
 
 void identifyCartridge() {
   const char* msg = NULL;
-  bool checkSuperChip = false;
-  portStart = 0;
-  portEnd = 0;
-  port2Start = 0;
-  port2End = 0;
   strcpy(info, "Cartridge type: ");
-  
-  if (!strcmp(force, "dpc") || (!force[0] && detectDPC())) {
-    mapper = MAPPER_DPC;
-    strcpy(stellaExtension, ".dpc"); // check
-    strcat(info + strlen(info), "F8+DPC");
-    hotspots = hotspots_F8;
-    numHotspots = sizeof(hotspots_F8)/sizeof(*hotspots_F8);
-    portStart = 0;
-    portEnd = 0x80;
-    port2Start = 0x800;
-    port2End = 0x880;
-    romSize = 8192+2048;
-  }
-  else if (!strcmp(force, "3f") || (!force[0] && detect3F())) {
-    mapper = 0x3F;
-    strcpy(stellaExtension, ".3f"); 
-    strcat(info + strlen(info), "3F");
-    hotspots = NULL;
-    numHotspots = 0;
-    romSize = 8192;
-  }
-  else if (!strcmp(force, "e0") || (force[0] && detectE0())) {
-    mapper = 0xE0;
-    strcpy(stellaExtension, ".e0");
-    strcat(info + strlen(info), "E0");
-    romSize = 8*1024;
-    hotspots = NULL;
-    numHotspots = 0;
-    strcpy(stellaExtension, ".e7");
-    strcat(info + strlen(info), "E7");
-  }
-  else if (!strncmp(force, "e7", 2)) {
-    if (!strcmp(force, "e7_16k")) 
-      romSize = 16*1024;
-    else if (!strcmp(force, "e7_12k"))
-      romSize = 12*1024;
-    else if (!strcmp(force, "e7_8k"))
-      romSize = 8*1024;
-    else {
-      if (!detectE7())
-        romSize = 16*1024;
-    }
-    mapper = 0xE7;
-    hotspots = NULL;
-    numHotspots = 0;
-    strcpy(stellaExtension, ".e7");
-    strcat(info + strlen(info), "E7");
-  }
-  else if (!force[0] && detectE7()) { // will set romSize if detected
-    mapper = 0xE7;
-    hotspots = NULL;
-    numHotspots = 0;
-    strcpy(stellaExtension, ".e7");
-    strcat(info + strlen(info), "E7");
-  }
-  else if (!strncmp(force, "f4", 2) || (!force[0] && diff(0xF4,hotspots_F4,8,0,7))) {
-    mapper = 0xF4;
-    hotspots = hotspots_F4;
-    numHotspots = 8;
-    strcat(info, "F4");
-    strcpy(stellaExtension, ".f4");
-    romSize = numHotspots * 4096;
-    checkSuperChip = true;
-  }
-  else if (!strncmp(force, "f6", 2) || (!force[0] && diff(0xF6,hotspots_F6,4,0,1))) {
-    mapper = 0xF6;
-    hotspots = hotspots_F6;
-    numHotspots = 4;
-    strcpy(stellaExtension, ".f6");
-    strcat(info, "F6");
-    romSize = numHotspots * 4096;
-    checkSuperChip = true;
-  }
-  else if (!strncmp(force, "fa", 2) || (!force[0] && diff(0xFA,hotspots_FA,3,1,2))) {
-    mapper = 0xFA;
-    hotspots = hotspots_FA;
-    numHotspots = 3;
-    strcpy(stellaExtension, ".fa");
-    strcat(info, "FA");
-    romSize = numHotspots * 4096; 
-    portStart = 0;
-    portEnd = 512;
-  } 
-  else if (!strncmp(force,"f8", 2) || (!force[0] && diff(0xF8,hotspots_F8,2,0,1))) {
-    mapper = 0xF8;
-    hotspots = hotspots_F8;
-    numHotspots = 2;
-    strcpy(stellaExtension, ".f8");
-    strcat(info, "F8");
-    romSize = numHotspots * 4096;
-    checkSuperChip = true;
-  }
-  else if (!strncmp(force, "fe", 2) || (!force[0] && detectFE())) {
-    mapper = 0xFE;
-    hotspots = NULL;
-    numHotspots = 0;
-    strcpy(stellaExtension, ".fe");
-    strcat(info, "FE");
-    romSize = 8192;
-    checkSuperChip = false;
-  }
-  else if (!strcmp(force, "cv") || (!force[0] && detectCV())) {
-    mapper = MAPPER_CV;
-    hotspots = NULL;
-    numHotspots = 0;
-    strcpy(stellaExtension, ".cv");
-    strcat(info, "CV");
-    romSize = 2048;
-  }
+
+  if (force) 
+    setCartType(force); 
   else {
-    mapper = 0;
-    hotspots = NULL;
-    numHotspots = 0;
-    if (!strcmp(force, "2k") || (!force[0] && check2k())) {
-      strcpy(stellaExtension, ".2k");
-      strcat(info, "2K");
-      romSize = 2048;      
-    }
-    else {
-      strcpy(stellaExtension, ".4k");
-      strcat(info, "4K");
-      romSize = 4096;
-    }
+    unsigned i;
+    for (i=0; i<LEN(cartTypes); i++)
+      if (NULL != cartTypes[i].detect) {
+        currentType = cartTypes+i;
+        uint16_t id = currentType->detect();
+        if (id != 0) {
+          setCartType(id);
+          break;
+        }
+      }
+    if (i >= LEN(cartTypes))
+      setCartType(MAPPER_4K);
   }
-  
-  if (checkSuperChip) {
-    if ((force[0] && force[2]=='s') || (!force[0] && detectSuperChip())) {
-      // Super Chip
-      portStart = 0;
-      portEnd = 256;
-      strcat(info, "SC");
-      strcat(stellaExtension, "s");
-    }
-  }
+
+  strcat(info, currentType->description);
   
   lastBank = -1;
   gameNumber = -1;
   blankValue = 0;
   do 
   {
-    crc = bankedCRC(0, romSize); 
+    crc = bankedCRC(0, currentType->romSize); 
     for (int i = 0 ; i < sizeof database / sizeof *database ; i++) {
-      if (romSize == database[i].size && crc == database[i].crc) {
+      if (currentType->romSize == database[i].size && crc == database[i].crc) {
         gameNumber = i;
         break;
       }
     }
 
-    if (gameNumber >= 0 || blankValue == 0xFF || portEnd <= portStart)
+    if (gameNumber >= 0 || blankValue == 0xFF || currentType->portEnd <= currentType->portStart)
       break;
     blankValue = 0xFF;
   }
   while (1);
   sprintf(info+strlen(info), "\r\nSize: %u\r\nCRC-32: %08x\r\nGame: %s\r\n", 
-    romSize,
+    currentType->romSize,
     crc,
     gameNumber < 0 ? "unidentified" : database[gameNumber].name);
   if (gameNumber < 0) {
@@ -798,9 +747,10 @@ void identifyCartridge() {
     }
     label[i] = 0;
   }
-  strcat(stellaFilename, stellaExtension);
-  const char* p = stellaExtension;
-  char* q = stellaShortName + 4;
+  strcat(stellaFilename, ".");
+  strcat(stellaFilename, currentType->extension);
+  const char* p = currentType->extension;
+  char* q = stellaShortName - 3;
   while (*p) {
     char c = *p++;
     *q++ = toupper(c);
@@ -822,16 +772,33 @@ bool nullWrite(const uint8_t *writebuff, uint32_t memoryOffset, uint16_t transfe
       EEPROM8_storeValue(NO_HOTPLUG, 1);
     }
     else if (!strncmp(p, "noforce", 7)) {
-      force[0] = 0;
+      force = 0;
       restart = true;
     }
     else if (!strncmp(p, "force:", 6)) {
       p += 6;
-      unsigned i = 0;
-      while (*p && *p != '\r' && *p != '\n' && i<3)
-        force[i++] = *p++;
-      force[i] = 0;
-      restart = true;
+      force = 0;
+      if (!strncmp(p, "e7_16k", 6))
+        force = MAPPER(0xE7, 16);
+      else if (!strncmp(p, "e7_12k", 6))
+        force = MAPPER(0xE7, 12);
+      else if (!strncmp(p, "e7_8k", 5))
+        force = MAPPER(0xE7, 8);
+      else {
+        char buf[8];
+        unsigned i = 0;
+        while (*p && *p != '\r' && *p != '\n' && i<7)
+          buf[i++] = *p++;
+        buf[i] = 0;
+        for (i=0; i<LEN(cartTypes); i++) {
+          if (!strcmp(buf, cartTypes[i].extension)) {
+            force = cartTypes[i].id;
+            break;
+          }
+        }
+      }
+      if (force)
+        restart = true;
     }
     else if (!strncmp(p,"stellaext", 9)) {
       stellaExt = true;
@@ -848,17 +815,16 @@ bool nullWrite(const uint8_t *writebuff, uint32_t memoryOffset, uint16_t transfe
 }
 
 void generateHTML(uint8_t* buf, uint32_t sector, uint32_t sectorCount) {
-    uint32_t b64Size = BASE64_ENCSIZE(romSize);
+    uint32_t b64Size = BASE64_ENCSIZE(currentType->romSize);
     uint32_t destStart;
     uint32_t srcStart;
     uint32_t length;
     length = FAT16GetChunkCopyRange(0, sizeof(launch_htm_0)-1, sector, sectorCount, &destStart, &srcStart);
     if (length) memcpy(buf+destStart, launch_htm_0+srcStart, length);
     length = FAT16GetChunkCopyRange(sizeof(launch_htm_0)-1, b64Size, sector, sectorCount, &destStart, &srcStart);
-    if (length) base64_encode((char*)buf+destStart, srcStart, length, bankedRead, romSize);
+    if (length) base64_encode((char*)buf+destStart, srcStart, length, currentType->bankedRead, currentType->romSize);
     length = FAT16GetChunkCopyRange(sizeof(launch_htm_0)-1+b64Size, sizeof(launch_htm_1)-1, sector, sectorCount, &destStart, &srcStart);
     if (length) memcpy(buf+destStart, launch_htm_1+srcStart, length);
-
 }
 
 bool fileReader(uint8_t *buf, const char* name, uint32_t sector, uint32_t sectorCount) {
@@ -866,7 +832,7 @@ bool fileReader(uint8_t *buf, const char* name, uint32_t sector, uint32_t sector
     uint32_t size = sectorCount * FAT16_SECTOR_SIZE;
     uint32_t start = sector * FAT16_SECTOR_SIZE;
     for (unsigned i = 0 ; i < size ; i++)
-      buf[i] = bankedRead(start + i);
+      buf[i] = currentType->bankedRead(start + i);
     return true;
   }
   else if (!strcmp(name,"INFO.TXT")) {
@@ -945,7 +911,7 @@ void setup() {
     if (hotplug && !detectCartridge(false))
       continue;
     delay(200);
-    newCRC = bankedCRC(0,romSize);
+    newCRC = bankedCRC(0,currentType->romSize);
   } while(hotplug && crc != newCRC && millis() - lastNoCartridgeTime < FALLBACK_TO_NONFINICKY); 
 
   digitalWrite(LED,!LED_ON);
@@ -960,21 +926,14 @@ void setup() {
   }
   summarizeOptions();
   FAT16AddFile("OPTIONS.TXT", strlen(options));
-  FAT16AddFile("LAUNCH.HTM", sizeof(launch_htm_0)-1+sizeof(launch_htm_1)-1+BASE64_ENCSIZE(romSize));
+  FAT16AddFile("LAUNCH.HTM", sizeof(launch_htm_0)-1+sizeof(launch_htm_1)-1+BASE64_ENCSIZE(currentType->romSize));
   FAT16AddFile("INFO.TXT", strlen(info)); // room for CRC-32 and crlf
   FAT16AddLFN("GAME.A26", filename);
-  FAT16AddFile("GAME.A26", romSize);
+  FAT16AddFile("GAME.A26", currentType->romSize);
   if (stellaExt) {
     FAT16AddLFN(stellaShortName, stellaFilename);
-    FAT16AddFile(stellaShortName, romSize);
+    FAT16AddFile(stellaShortName, currentType->romSize);
   }
-#ifdef DEBUG
-  for (unsigned i = 0 ; i < 8; i++) {
-    char buf[5];
-    sprintf(buf, "%04X", hotspots_F4[i]);
-    FAT16AddFile(buf, 4096);
-  }
-#endif
   USBComposite.setProductId(PRODUCT_ID);
   USBComposite.clear();
   MassStorage.setDriveData(0, FAT16_NUM_SECTORS, FAT16ReadSectors, nullWrite);
