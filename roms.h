@@ -3,7 +3,6 @@ static const struct {
     uint16_t size;
     uint32_t crc;
 } __packed database[] = {
-//{ "E.T. - The Extra-Terrestrial (USA)", 8192, 0x6D0A475F },
 { "3-D Genesis (USA) (Proto)", 8192, 0x931A0BDC }, 
 { "3-D Ghost Attack (USA) (Proto)", 16384, 0x11396D94 }, 
 { "3-D Havoc (USA) (Proto)", 8192, 0xF75DDAD1 },
