@@ -136,14 +136,14 @@ uint16_t detect2K();
 // a detector can also return the ID of a later carttype
 const CartType cartTypes[] = {
   { MAPPER_DPC, "dpc", "DPC", 10240, 0xff8, 0xffa, 0x7FF, 0, 0x80, read, switchBankGeneric, bankedReadDPC, detectDPC },
-  { 0x3F, "3f", "3F", 8192, 0, 0, 0, 0, 0, read3F, switchBank3F, bankedRead3F, detect3F },
-  { MAPPER_UA, "UA", "UA", 4096, 0, 0, 0, 0, 0, readUA, switchBankUA, bankedReadGeneric, detectUA },
-  { 0xFE, "fe", "FE", 8*1024, 0, 0, 0, 0, 0, readFE, switchBankFE, bankedReadGeneric, detectFE },
   { MAPPER_CV, "cv", "CV", 2048, 0, 0, 0, 0, 0, read, NULL, bankedReadCV, detectCV },  
-  { 0xE0, "e0", "E0", 8192, 0xff0, 0xff8, 0, 0, 0, read, NULL, bankedReadE0, detectE0 },
   { MAPPER(0xE7, 16), "e7", "E7 16K", 16*1024, 0xfe0, 0xfec, 0, 0, 0, read, NULL, bankedReadE7, detectE7 },
   { MAPPER(0xE7, 12), "e7", "E7 12K", 12*1024, 0xfe0, 0xfec, 0, 0, 0, read, NULL, bankedReadE7, NULL },
   { MAPPER(0xE7, 8), "e7", "E7 8K", 8*1024, 0xfe0, 0xfec, 0, 0, 0, read, NULL, bankedReadE7, NULL },
+  { 0x3F, "3f", "3F", 8192, 0, 0, 0, 0, 0, read3F, switchBank3F, bankedRead3F, detect3F },
+  { MAPPER_UA, "UA", "UA", 4096, 0, 0, 0, 0, 0, readUA, switchBankUA, bankedReadGeneric, detectUA },
+  { 0xFE, "fe", "FE", 8*1024, 0, 0, 0, 0, 0, readFE, switchBankFE, bankedReadGeneric, detectFE },
+  { 0xE0, "e0", "E0", 8192, 0xff0, 0xff8, 0, 0, 0, read, NULL, bankedReadE0, detectE0 },
   { 0xF4, "f4", "F4", 32*1024, 0xff4, 0xffc, 0, 0, 0, read, switchBankGeneric, bankedReadGeneric, detectF4 },
   { 0xF4|SUPERCHIP, "f4s", "F4SC", 32*1024, 0xff4, 0xffc, 0xFFF, 0, 0x100, read, switchBankGeneric, bankedReadGeneric, NULL },
   { 0xF6, "f6", "F6", 16*1024, 0xff6, 0xffa, 0, 0, 0, read, switchBankGeneric, bankedReadGeneric, detectF6 },
@@ -246,7 +246,7 @@ inline void setAddress(uint32_t address) {
     uint32_t bit12AddressPortValue = (address & 0x1000) << (15-12);
     register uint32_t bsrr12 = (bit12AddressPortValue) | ( ((~bit12AddressPortValue) & bit12AddressPortMask) << 16);
 
-    // *nearly* atomic address write; alas the order does matter in practice
+    // *nearly* atomic address write; the order does matter in practice
     mainAddressRegs->BSRR = bsrr;
     bit12AddressRegs->BSRR = bsrr12;
 }
@@ -257,19 +257,26 @@ inline uint8_t readDataByte() {
   return ((x>>3)&0b11)|( (x>>(10-2)) & 0b11111100);
 }
 
-// raw read
-inline __attribute__((always_inline)) uint8_t rawRead(uint32_t address) {
-  setAddress(address);
+// always sets bit 12 of address, so caller doesn't have to worry about it
+uint8_t read(uint32_t address) {
+  *addressBit12Write = 0;
+  DWTDelayMicroseconds(1); // I don't know if this delay is needed
+  setAddress(address|0x1000);
   DWTDelayMicroseconds(1); 
   
   return readDataByte();
 }
 
-// always sets bit 12 of address, so caller doesn't have to worry about it
-uint8_t read(uint32_t address) {
+// leave bit 12 of address as is
+uint8_t read0UA(uint32_t address) {
+  // to prevent an accidental access to 0x0220 or 0x0240, we clear bit 9 early on
+  *addressBit9Write = 0;
   *addressBit12Write = 0;
   DWTDelayMicroseconds(1); // I don't know if this delay is needed
-  return rawRead(address);
+  setAddress(address);
+  DWTDelayMicroseconds(1); 
+  
+  return readDataByte();
 }
 
 uint8_t readFE(uint32_t address) {
@@ -315,9 +322,9 @@ void switchBankFE(uint32_t bank) {
 
 void switchBankUA(uint32_t bank) {
     if (bank == 0)
-      rawRead(0x220);
+      read0UA(0x220);
     else
-      rawRead(0x240);
+      read0UA(0x240);
 }
 
 void switchBank3F(uint32_t bank) {
@@ -620,8 +627,8 @@ uint16_t detectCV() {
 uint16_t detect2K(void) {
   for (unsigned i = 0 ; i < 2048 ; i++)
     if (read(i) != read(i+2048))
-      return MAPPER_2K;
-  return MAPPER_4K;
+      return MAPPER_4K;
+  return MAPPER_2K;
 }
 
 uint8_t lfsr(uint8_t LFSR) {
@@ -707,6 +714,9 @@ uint16_t detectF8() {
 }
 
 uint16_t detectFA() {
+//  if (detectWritePort(0x1000)<1)
+//    return 0;
+  // todo: check write port without crashing
   if (! diff(1,2))
     return 0;
   return 0xFA;

@@ -1,0 +1,54 @@
+Notes on how we detect cartridge types.
+
+DPC:
+Detect via RNG
+
+CV:
+Detect via write port at 1700
+
+E7:
+Detect via bankswitch at 1fe4 and 1fe5 and then compare 1200-17F0.
+Then check how many banks are available via CRCs.
+Switchable write port 1000-13ff, read port 1400-17ff.
+Permanent write port 1800-18ff, read port 1900-19ff.
+Hotspots 1fe0-1feb
+
+3F:
+Detect via bankswitch at 3F and then compare 1200-17EF
+
+UA:
+Switch banks via hotspots at 0220/0240 and then compare 1200-17EF
+
+FE:
+Switch banks via control at 01FE and then compare 1200-17EF
+
+E0:
+Switch 1800-1BFF bank using hotspots 1FF0 and 1FF1 and then compare 1A00-1BFF
+Hotspots 1FE0-1FF7
+
+F4
+Switch banks via 1FF4 and 1FFB and then compare 1200-1FEF
+Hotspots 1FF4-1FFB
+
+Superchip variant: Detect write port at 1000
+Write port 1000-107F, read port 1080-10FF
+
+F6
+Switch banks via 1FF6 and 1FF7 and then compare 1200-1FEF
+Hotspots 1FF6-1FF9
+
+F8
+Switch banks via 1FF8 and 1FF9 and then compare 1200-1FEF
+Hotspots 1FF8-1FF9
+
+FA
+Should first look for write port at 1000, but don't yet.
+Then as a double-check switch banks via 1FF9 and 1FFA with D0 asserted and then compare 1200-1FEF
+Hotspots 1FF9-1FFB with D0 asserted
+Write port 1000-10FF, read port 1100-11FF
+
+2K
+Detect duplication
+
+4K
+Fallback
