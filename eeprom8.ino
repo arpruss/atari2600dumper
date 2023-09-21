@@ -109,8 +109,12 @@ static void EEPROM8_reset(void) {
 }
 
 
-void EEPROM8_init(void) {
-  uint32_t flashSize = *(uint16 *) (0x1FFFF7E0);
+void EEPROM8_init(uint16_t fs) {
+  uint32_t flashSize;
+  if (fs == 0)
+    flashSize = *(uint16 *) (0x1FFFF7E0);
+  else
+    flashSize = fs;
   pageBase = 0x8000000 + flashSize * 1024 - EEPROM_PAGE_SIZE;
 
   for(uint32_t i=0; i<255; i++)

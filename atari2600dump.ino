@@ -1,6 +1,8 @@
 /*
  * You need 21 pins, 8 of them (data) 5V tolerant. The assignments below
  * are for an stm32f103c8t6 blue pill.
+ * 
+ * You need a 128kb flash version to have the full database of ROMs.
  *
  * View if you are facing the console:
  * View if you are facing the console:
@@ -14,7 +16,6 @@
  */
 
 // cartridge types theoretically supported: 2K, 4K, 3F, CV, E0, E7, F4, F6, F8, FA, FE, UA, DPC, plus Super Chip variants
-// classic types not supported: F0, UA
 // tested: F8, DPC
 
 #include <ctype.h>
@@ -714,8 +715,8 @@ uint16_t detectF8() {
 }
 
 uint16_t detectFA() {
-//  if (detectWritePort(0x1000)<1)
-//    return 0;
+  if (detectWritePort(0x1000)<1)
+    return 0;
   // todo: check write port without crashing
   if (! diff(1,2))
     return 0;
@@ -764,17 +765,20 @@ void identifyCartridge() {
     blankValue = 0xFF;
   }
   while (1);
+
   sprintf(info+strlen(info), "\r\nSize: %u\r\nCRC-32: %08x\r\nGame: %s\r\n", 
     cart->romSize,
     crc,
     gameNumber < 0 ? "unidentified" : database[gameNumber].name);
+
   if (gameNumber < 0) {
     strcpy(filename, "game.a26");
     strcpy(stellaFilename, "game");
     strcpy(label, "2600 Cart");
   }
   else {
-    strcpy((char*)detectBuffer, database[gameNumber].name);
+    strncpy((char*)detectBuffer, database[gameNumber].name,sizeof(detectBuffer));
+    detectBuffer[sizeof(detectBuffer)-1] = 0;
     char* p = strstr((char*)detectBuffer, " (");
     if (p != NULL)
       *p = 0;
@@ -909,7 +913,7 @@ void waitForCartridge() {
 }
 
 void setup() {
-  EEPROM8_init();
+  EEPROM8_init(128);
   hotplug = !EEPROM8_getValue(NO_HOTPLUG);
   stellaExt = !EEPROM8_getValue(NO_STELLAEXT);
   dataPinState(INPUTX);

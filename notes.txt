@@ -42,7 +42,7 @@ Switch banks via 1FF8 and 1FF9 and then compare 1200-1FEF
 Hotspots 1FF8-1FF9
 
 FA
-Should first look for write port at 1000, but don't yet.
+First look for write port at 1000.
 Then as a double-check switch banks via 1FF9 and 1FFA with D0 asserted and then compare 1200-1FEF
 Hotspots 1FF9-1FFB with D0 asserted
 Write port 1000-10FF, read port 1100-11FF
