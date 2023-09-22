@@ -915,6 +915,7 @@ void waitForCartridge() {
 }
 
 void setup() {
+  DWTInitTimer();
   EEPROM8_init(128);
   hotplug = !EEPROM8_getValue(NO_HOTPLUG);
   stellaExt = !EEPROM8_getValue(NO_STELLAEXT);
