@@ -15,7 +15,7 @@
  *   PA7  PA6  PA5  PA4  PA3  PA2  PA1  PA0  PB4  PB3  PA15
  */
 
-// cartridge types theoretically supported: 2K, 4K, 3F, CV, E0, E7, F4, F6, F8, FA, FE, UA, DPC, plus Super Chip variants
+// cartridge types theoretically supported: 2K, 4K, 3F, CV, E0, E7, F4, F6, F8, FA, FE, UA, DPC, plus Super Chip variants of F4-F8
 // tested: F8, DPC
 
 #include <ctype.h>
@@ -31,11 +31,8 @@ USBCompositeSerial CompositeSerial;
 #define PRODUCT_ID 0x29
 
 #define INPUTX INPUT
-
-const char inconsistent[] = "Inconsistent Read!";
-char options[512];
-
-FAT16RootDirEntry rootDir[6+2*FAT16_NUM_ROOT_DIR_ENTRIES_FOR_LFN(LONGEST_FILENAME)+FAT16_NUM_ROOT_DIR_ENTRIES_FOR_LFN(sizeof(inconsistent)-1)];
+#define LED    PC13
+#define LED_ON 0
 
 #define NO_HOTPLUG 0
 #define NO_STELLAEXT 0
@@ -47,9 +44,14 @@ uint16_t force = 0;
 bool restart = false;
 char filename[255];
 char stellaFilename[255];
+const char inconsistent[] = "Inconsistent Read!";
+char options[FAT16_SECTOR_SIZE];
 char stellaShortName[] = "GAME.XXX";
 char info[FAT16_SECTOR_SIZE];
 char label[12];
+
+FAT16RootDirEntry rootDir[6+2*FAT16_NUM_ROOT_DIR_ENTRIES_FOR_LFN(LONGEST_FILENAME)+FAT16_NUM_ROOT_DIR_ENTRIES_FOR_LFN(sizeof(inconsistent)-1)];
+
 const char launch_htm_0[]="<!DOCTYPE html><html lang='en'><head><meta charset='UTF-8'><title>Javatari</title><meta name='description' content='Javatari - The online Atari 2600 emulator'></head>"
 "<body><div id='javatari' style='text-align: center; margin: 20px auto 0; padding: 0 10px;'><div id='javatari-screen' style='box-shadow: 2px 2px 10px rgba(0, 0, 0, .7);'></div></div>"
 "<script src='https://arpruss.github.io/javatari/javatari.js'></script><script>Javatari.CARTRIDGE_URL = 'data:application/octet-stream;base64,";
@@ -57,14 +59,14 @@ const char launch_htm_1[]="';Javatari.preLoadImagesAndStart();</script></body></
 
 #define CARTRIDGE_KEEP_TIME_MILLIS 2000 // cartridge must be kept in this long to register
 #define FALLBACK_TO_NONFINICKY   10000 // after 10 sec, give up waiting for reliable reads and just assume it's an unreliable cartridge
-#define LED    PC13
-#define LED_ON 0
 
 int gameNumber = -1;
 
+// GPIO settings. Note that if you change the pin numbers below, you will also need to change
+// various masks and shifts, both here and in readDataByte(), setAddress(), dataWrite().
+
 const unsigned dataPins[8] = { PB3,PB4,PB10,PB11,PB12,PB13,PB14,PB15 };
 const unsigned addressPins[13] = { PA0,PA1,PA2,PA3,PA4,PA5,PA6,PA7,PA8,PA9,PA10, PA15,PC15 };
-//const unsigned dataBits[8] = {3,4,10,11,12,13,14,15};
 gpio_reg_map* const mainAddressRegs = GPIOA_BASE;
 const uint32_t mainAddressPortMask = 0b1000011111111111;
 gpio_reg_map* const bit12AddressRegs = GPIOC_BASE;
@@ -258,6 +260,11 @@ inline uint8_t readDataByte() {
   return ((x>>3)&0b11)|( (x>>(10-2)) & 0b11111100);
 }
 
+inline void dataWrite(uint8_t value) {
+  uint32_t bsrr = ((value & 3) << 3) | ((value & ~3)<<8);
+  dataRegs->BSRR = bsrr | ((~bsrr & dataPortMask) << 16);
+}
+
 // always sets bit 12 of address, so caller doesn't have to worry about it
 uint8_t read(uint32_t address) {
   *addressBit12Write = 0;
@@ -296,11 +303,6 @@ uint8_t readUA(uint32_t address) {
   // to prevent an accidental access to 0x0220 or 0x0240, we clear bit 9 early on
   *addressBit9Write = 0;
   return read(address);
-}
-
-inline void dataWrite(uint8_t value) {
-  uint32_t bsrr = ((value & 3) << 3) | ((value & ~3)<<8);
-  dataRegs->BSRR = bsrr | ((~bsrr & dataPortMask) << 16);
 }
 
 // write but don't zero A12 first
