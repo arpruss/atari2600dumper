@@ -91,6 +91,10 @@ const uint32_t dataPortMask = 0b1111110000011000;
 #define MAPPER_4K MAPPER(0,4)
 #define MAPPER_2K MAPPER(0,2)
 
+#if __has_include ("customisation.h")
+#  include "customisation.h"
+#endif
+
 typedef struct {
   uint16_t id;
   char extension[4];
