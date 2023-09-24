@@ -5,14 +5,13 @@
  * You need a 128kb flash version to have the full database of ROMs.
  *
  * View if you are facing the console:
- * View if you are facing the console:
- *             PB0  PB1  PB11 PB10 PC15 PB14 PB15 PA8  PA9  PA10
+ *             PA8  PA9  PA11 PA10 PC15 PB15 PB14 PB13 PB12 PB11
  * --------------------------------------------------------------
  * | GND  5V   A8   A9   A11  A10  A12  D7   D6   D5   D4   D3  |
- * |
+ * |                                                            |
  * | A7   A6   A5   A4   A3   A2   A1   A0   D0   D1   D2   GND |
  * --------------------------------------------------------------
- *   PA7  PA6  PA5  PA4  PA3  PA2  PA1  PA0  PB4  PB3  PA15
+ *   PA7  PA6  PA5  PA4  PA3  PA2  PA1  PA0  PB3  PB4  PB10
  */
 
 // cartridge types theoretically supported: 2K, 4K, 3F, CV, E0, E7, F4, F6, F8, FA, FE, UA, DPC, plus Super Chip variants of F4-F8
@@ -90,6 +89,10 @@ const uint32_t dataPortMask = 0b1111110000011000;
 #define MAPPER_UA 0x0A
 #define MAPPER_4K MAPPER(0,4)
 #define MAPPER_2K MAPPER(0,2)
+
+#if __has_include ("customisation.h")
+#  include "customisation.h"
+#endif
 
 typedef struct {
   uint16_t id;
