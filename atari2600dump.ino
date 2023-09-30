@@ -28,13 +28,14 @@ USBMassStorage MassStorage;
 USBCompositeSerial CompositeSerial;
 
 #define PRODUCT_ID 0x29
+#undef SERIAL_TEST
 
 #define INPUTX INPUT
 #define LED    PC13
 #define LED_ON 0
 
 #define NO_HOTPLUG 0
-#define NO_STELLAEXT 0
+#define NO_STELLAEXT 1
 bool hotplug = true;
 bool stellaExt = true;
 bool finicky = true;
@@ -917,6 +918,35 @@ void waitForCartridge() {
   }
 }
 
+#ifdef SERIAL_TEST
+void setup() {
+  DWTInitTimer();
+  dataPinState(INPUTX);
+  for (unsigned i = 0 ; i < 13 ; i++)
+    pinMode(addressPins[i], OUTPUT);
+  pinMode(LED, OUTPUT);
+  digitalWrite(LED, !LED_ON);
+  Serial.begin();
+  while(!Serial);
+  delay(4000);
+  digitalWrite(LED, LED_ON);
+
+  for (unsigned i = 0 ; i < 4096 ; i += 16) {
+    char buf[16];
+    sprintf(buf, "%04x", i);
+    Serial.print(buf);
+    for (unsigned j = 0 ; j < 16 ; j++) {
+      sprintf(buf, " %02x", read(i+j));
+      Serial.print(buf);
+    }
+    Serial.println("");
+  }
+}
+
+void loop() {
+}
+
+#else
 void setup() {
   DWTInitTimer();
   EEPROM8_init(128);
@@ -997,6 +1027,4 @@ void loop() {
   }
   MassStorage.loop();
 }
-
-
-
+#endif
