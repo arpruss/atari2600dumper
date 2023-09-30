@@ -69,7 +69,7 @@ const unsigned dataPins[8] = { PB3,PB4,PB10,PB11,PB12,PB13,PB14,PB15 };
 const unsigned addressPins[13] = { PA0,PA1,PA2,PA3,PA4,PA5,PA6,PA7,PA8,PA9,PA10, PA15,PC15 };
 gpio_reg_map* const mainAddressRegs = GPIOA_BASE;
 const uint32_t mainAddressPortMask = 0b1000011111111111;
-gpio_reg_map* const bit12AddressRegs = GPIOC_BASE;
+gpio_reg_map* const bit12AddressRegs = GPIOC_BASE; // This is A12 = Chip Select on the cartridge
 const uint32_t bit12AddressPortMask = 0b1000000000000000;
 gpio_reg_map* const dataRegs = GPIOB_BASE;
 volatile uint32_t* const addressBit12Write = bb_perip( &(bit12AddressRegs->ODR), 15);
@@ -247,10 +247,15 @@ void summarizeOptions(void) {
 }
 
 inline void setAddress(uint32_t address) {
+//const unsigned addressPins[13] = { PA0,PA1,PA2,PA3,PA4,PA5,PA6,PA7,PA8,PA9,PA10, PA15,PC15 };
+// Address pins A0-A10 on the cart are connected to PA0-PA10 on the pill, so they can be put into the
+// port as-is. But address pin A11 is connected to PA15, so it needs to be shifted 4 bites left.
     uint32_t mainAddressPortValue = (address & 0x7ff) | ( (address & 0x800) << (15-11));
   
     register uint32_t bsrr = (mainAddressPortValue) | ( ((~mainAddressPortValue) & mainAddressPortMask) << 16);
-    uint32_t bit12AddressPortValue = (address & 0x1000) << (15-12);
+
+// The A12 (=Chip Select) line is connected to PC15, so we extract it from the address and shift it left 3 bits    
+    uint32_t bit12AddressPortValue = (address & 0x1000) << (15-12); 
     register uint32_t bsrr12 = (bit12AddressPortValue) | ( ((~bit12AddressPortValue) & bit12AddressPortMask) << 16);
 
     // *nearly* atomic address write; the order does matter in practice
@@ -265,6 +270,7 @@ inline uint8_t readDataByte() {
 }
 
 inline void dataWrite(uint8_t value) {
+  // put bits 0 and 1 into pins 3 and 4, and put bits 2-7 into pins 10-15
   uint32_t bsrr = ((value & 3) << 3) | ((value & ~3)<<8);
   dataRegs->BSRR = bsrr | ((~bsrr & dataPortMask) << 16);
 }
