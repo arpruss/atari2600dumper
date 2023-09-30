@@ -5,7 +5,7 @@
  * You need a 128kb flash version to have the full database of ROMs.
  *
  * View if you are facing the console:
- *             PA8  PA9  PA11 PA10 PC15 PB15 PB14 PB13 PB12 PB11
+ *             PA8  PA9  PA15 PA10 PC15 PB15 PB14 PB13 PB12 PB11
  * --------------------------------------------------------------
  * | GND  5V   A8   A9   A11  A10  A12  D7   D6   D5   D4   D3  |
  * |                                                            |
